@@ -1,5 +1,12 @@
 # Vehicle Service Management System (GEAR)
 
+> **New:** a complete bilingual (Arabic / English) **BMW service center management system** that works on mobile and PC is in [`service-center/`](service-center/README.md).
+> It covers check-in, diagnosis, customers & vehicles, service reminders, work orders, inventory, suppliers, cash & accounting, invoices, and staff bonuses.
+> Run it with `cd service-center && npm start` (Node.js 22.13+).
+>
+> **جديد:** نظام إدارة مركز صيانة BMW متكامل بالعربي والإنجليزي، يعمل على الموبايل والكمبيوتر، موجود في مجلد [`service-center/`](service-center/README.md).
+
+
 Regular vehicle servicing is essential to maintain the proper functioning and efficiency of a vehicle. The Vehicle Service Management System, known as GEAR, is designed to streamline the vehicle servicing process and provide a convenient experience for both customers and service centers. 
 
 ## Introduction
