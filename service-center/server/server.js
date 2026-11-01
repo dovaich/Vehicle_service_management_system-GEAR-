@@ -964,6 +964,15 @@ function currentUser(req) {
   return u;
 }
 const loginAttempts = new Map();
+// Behind a hosting proxy (Railway, Render, Fly, Nginx...) set TRUST_PROXY=1
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+function clientIp(req) {
+  if (TRUST_PROXY && req.headers['x-forwarded-for']) return String(req.headers['x-forwarded-for']).split(',')[0].trim();
+  return req.socket.remoteAddress;
+}
+function isHttps(req) {
+  return !!req.socket.encrypted || (TRUST_PROXY && String(req.headers['x-forwarded-proto'] || '').startsWith('https'));
+}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -977,7 +986,7 @@ const route = (method, pattern, roles, handler) => {
 
 // auth
 route('POST', '/api/auth/login', null, ({ body, req, res }) => {
-  const ip = req.socket.remoteAddress;
+  const ip = clientIp(req);
   const a = loginAttempts.get(ip) || { n: 0, t: Date.now() };
   if (Date.now() - a.t > 15 * 60000) { a.n = 0; a.t = Date.now(); }
   if (a.n >= 10) throw new HttpError(429, 'too_many_attempts');
@@ -990,13 +999,13 @@ route('POST', '/api/auth/login', null, ({ body, req, res }) => {
   const token = crypto.randomBytes(32).toString('hex');
   run('INSERT INTO sessions(token,user_id) VALUES(?,?)', token, u.id);
   run("DELETE FROM sessions WHERE created_at < datetime('now','localtime','-30 days')");
-  res.setHeader('Set-Cookie', `gear_session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${30 * 86400}`);
+  res.setHeader('Set-Cookie', `gear_session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${30 * 86400}${isHttps(req) ? '; Secure' : ''}`);
   audit(u, 'login', 'users', u.id);
   return { user: { id: u.id, username: u.username, name: u.name, role: u.role }, mustChange: body.password === 'admin123' };
 });
-route('POST', '/api/auth/logout', ANY, ({ user, res }) => {
+route('POST', '/api/auth/logout', ANY, ({ user, res, req }) => {
   run('DELETE FROM sessions WHERE token=?', user.token);
-  res.setHeader('Set-Cookie', 'gear_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0');
+  res.setHeader('Set-Cookie', `gear_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${isHttps(req) ? '; Secure' : ''}`);
   return { ok: true };
 });
 route('GET', '/api/auth/me', ANY, ({ user }) => ({ user: { id: user.id, username: user.username, name: user.name, role: user.role, employee_id: user.employee_id } }));

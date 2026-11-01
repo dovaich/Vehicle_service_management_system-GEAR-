@@ -455,7 +455,7 @@ function seed() {
   }
 
   if (!get('SELECT id FROM users LIMIT 1')) {
-    run('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)', 'admin', 'Administrator', hashPassword('admin123'), 'admin');
+    run('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)', 'admin', 'Administrator', hashPassword(process.env.ADMIN_PASSWORD || 'admin123'), 'admin');
   }
 
   if (!get('SELECT id FROM accounts LIMIT 1')) {

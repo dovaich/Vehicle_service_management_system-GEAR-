@@ -33,6 +33,36 @@ node scripts/demo-data.js http://localhost:3000
 
 ---
 
+## التشغيل على الموبايل بدون كمبيوتر (رفع السيستم على سيرفر أونلاين) | Run on phones without a PC (cloud hosting)
+
+بتشغّل السيستم على سيرفر على الإنترنت مرة واحدة، وبعدها أي موبايل (ليك أو للموظفين) يفتحه من رابط، وكلهم شغالين على نفس البيانات.
+
+**الطريقة المقترحة: Railway (حوالي 5 دولار في الشهر)**
+
+1. **ارفع الكود على GitHub:** افتح الـ repository، واختار **Add file ← Upload files**، واسحب فولدر `service-center` كله.
+2. ادخل على **https://railway.com** وسجّل دخول بحساب GitHub.
+3. اختار **New Project ← Deploy from GitHub repo** واختار الـ repository.
+4. في إعدادات الخدمة (**Settings**):
+   - **Root Directory** = `service-center`. Railway هيلاقي الـ `Dockerfile` لوحده.
+   - **Networking ← Generate Domain**، وده هيطلعلك رابط https زي `gear-xxxx.up.railway.app`.
+5. **مهم جداً:** اعمل **Volume** واربطه على المسار `/data`، وإلا البيانات هتتمسح مع كل تحديث.
+6. في **Variables** ضيف `ADMIN_PASSWORD` بكلمة سر قوية للأدمن.
+7. افتح الرابط من الموبايل، ومن قائمة المتصفح اختار **"إضافة إلى الشاشة الرئيسية"**، فيبقى عندك أيقونة زي التطبيق بالظبط.
+
+أي استضافة تانية بتشغّل Docker وفيها مساحة تخزين دائمة هتنفع برضو، زي Fly.io أو Render (خطة مدفوعة فيها Disk) أو أي VPS.
+لو هتستخدم VPS، شغّل السيستم بالأمر ده:
+`docker build -t gear . && docker run -d -p 3000:3000 -v gear-data:/data -e ADMIN_PASSWORD=... gear`
+وحط قدامه HTTPS (مثلاً Caddy).
+
+| المتغير | Variable | الوظيفة |
+|---|---|---|
+| `ADMIN_PASSWORD` | initial admin password | كلمة سر الأدمن أول مرة بس (الافتراضي admin123) |
+| `GEAR_DATA_DIR` | data folder | مكان قاعدة البيانات والصور (`/data` جوه Docker) |
+| `TRUST_PROXY` | `1` behind a hosting proxy | مفعّل في الـ Dockerfile، وبيخلي الكوكيز آمنة على https |
+| `PORT` | port | الافتراضي 3000 |
+
+---
+
 ## الوحدات | Modules
 
 | الوحدة | Module | ماذا تفعل |
