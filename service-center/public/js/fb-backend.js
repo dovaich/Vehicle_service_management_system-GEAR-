@@ -779,32 +779,38 @@ function init() {
   // ------------------------------------------------------------------ dashboard & reports
   const cnt = async (c, ...cons) => (await F.getCountFromServer(q(c, ...cons))).data().count;
   const sumOf = async (c, field, ...cons) => num((await F.getAggregateFromServer(q(c, ...cons), { s: F.sum(field) })).data().s);
+  // each metric is independent: one failing query (e.g. an index still building) never breaks the dashboard
+  const safe = async (fn, fallback) => { try { return await fn(); } catch (e) { console.warn('dashboard metric failed', e); return fallback; } };
   async function dashboard() {
-    const t = today(); const month = t.slice(0, 7);
-    const active = await all('work_orders', W('active', '==', true));
+    const t = today(); const month = t.slice(0, 7); const ms = month + '-01';
+    const active = await safe(() => all('work_orders', W('active', '==', true)), []);
     const days = num(await getSetting('reminder_days_ahead', '30'));
     const by = {}; active.forEach((w) => { by[w.status] = (by[w.status] || 0) + 1; });
     const prio = { urgent: 0, high: 1 };
     const out = {
       in_workshop: active.length, ready_for_delivery: by.completed || 0, waiting_parts: by.waiting_parts || 0,
-      receptions_today: await cnt('receptions', W('date', '>=', t)),
-      appointments_today: (await all('appointments', W('date', '==', t))).filter((a) => a.status === 'scheduled').sort((a, b) => ((a.time || '') < (b.time || '') ? -1 : 1)),
-      reminders_due: await cnt('reminders', W('open', '==', true), W('due_date', '<=', addDays(t, days))).catch(() => 0), // 0 while the index is building
-      low_stock: await cnt('parts', W('low', '==', true)),
+      receptions_today: await safe(() => cnt('receptions', W('date', '>=', t)), 0),
+      appointments_today: (await safe(() => all('appointments', W('date', '==', t)), [])).filter((a) => a.status === 'scheduled').sort((a, b) => ((a.time || '') < (b.time || '') ? -1 : 1)),
+      reminders_due: await safe(() => cnt('reminders', W('open', '==', true), W('due_date', '<=', addDays(t, days))),
+        await safe(async () => (await all('reminders', W('open', '==', true))).filter((r) => r.due_date && r.due_date <= addDays(t, days)).length, 0)),
+      low_stock: await safe(() => cnt('parts', W('low', '==', true)), 0),
       wo_by_status: Object.entries(by).map(([status, n]) => ({ status, n })),
       active_orders: active.sort((a, b) => (prio[a.priority] ?? 2) - (prio[b.priority] ?? 2) || (a.date < b.date ? 1 : -1)).slice(0, 12)
         .map((w) => ({ id: w.id, no: w.no, status: w.status, priority: w.priority, date: w.date, bay: w.bay, plate: w.plate, model: w.model, series: w.series, customer_name: w.customer_name })),
     };
     if (MONEY.includes(me.role)) {
-      const ms = month + '-01';
-      out.revenue_today = r2(await sumOf('invoices', 'total_eff', W('date', '==', t)));
-      out.revenue_month = r2(await sumOf('invoices', 'total_eff', W('date', '>=', ms), W('date', '<=', t)));
-      out.collected_today = r2((await all('transactions', W('date', '==', t), W('ref_type', '==', 'invoice'))).reduce((s, x) => s + x.signed, 0));
-      out.expenses_month = r2(await sumOf('transactions', 'amount', W('is_expense', '==', true), W('date', '>=', ms)).catch(() => 0));
-      out.receivables = r2(await sumOf('customers', 'balance'));
-      out.cash_balance = r2((await all('accounts')).reduce((s, a) => s + num(a.balance), 0));
-      const d14 = await all('invoices', W('date', '>=', addDays(t, -13)));
-      const g = {}; d14.forEach((i) => { g[i.date] = (g[i.date] || 0) + num(i.total_eff); });
+      // plain single-field queries only (no aggregation indexes needed)
+      const from = addDays(t, -13) < ms ? addDays(t, -13) : ms;
+      const invs = await safe(() => all('invoices', W('date', '>=', from)), []);
+      const txs = await safe(() => all('transactions', W('date', '>=', ms)), []);
+      const sumInv = (f) => r2(invs.filter(f).reduce((s, i) => s + num(i.total_eff), 0));
+      out.revenue_today = sumInv((i) => i.date === t);
+      out.revenue_month = sumInv((i) => i.date >= ms && i.date <= t);
+      out.collected_today = r2(txs.filter((x) => x.date === t && x.ref_type === 'invoice').reduce((s, x) => s + num(x.signed), 0));
+      out.expenses_month = r2(txs.filter((x) => x.is_expense).reduce((s, x) => s + num(x.amount), 0));
+      out.receivables = r2(await safe(() => sumOf('customers', 'balance'), 0));
+      out.cash_balance = r2((await safe(() => all('accounts'), [])).reduce((s, a) => s + num(a.balance), 0));
+      const g = {}; invs.filter((i) => i.date >= addDays(t, -13)).forEach((i) => { g[i.date] = (g[i.date] || 0) + num(i.total_eff); });
       out.daily = Object.keys(g).sort().map((date) => ({ date, total: r2(g[date]) }));
     }
     return out;

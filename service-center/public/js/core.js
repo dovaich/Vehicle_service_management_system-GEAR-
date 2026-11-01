@@ -100,7 +100,9 @@
     el.textContent = msg;
     document.getElementById('toasts').appendChild(el);
     setTimeout(() => el.classList.add('show'), 10);
-    setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, type === 'err' ? 5000 : 2500);
+    const hide = () => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); };
+    if (type === 'err') { el.style.pointerEvents = 'auto'; el.title = '✕'; el.onclick = hide; setTimeout(hide, 30000); } // errors stay until tapped (30s max)
+    else setTimeout(hide, 2500);
   };
   G.fail = (e) => { console.error(e); G.toast(e.message || String(e), 'err'); };
 
