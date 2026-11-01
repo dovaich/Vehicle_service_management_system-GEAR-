@@ -1,11 +1,10 @@
-/* Firebase mode: paste your project's web config here (Firebase console > Project settings > Your apps > Web app).
- * Leave it as null to run with the built-in Node.js server instead (npm start).
- *
- * window.FIREBASE_CONFIG = {
- *   apiKey: "AIza...",
- *   authDomain: "your-project.firebaseapp.com",
- *   projectId: "your-project",
- *   appId: "1:123:web:abc"
- * };
- */
-window.FIREBASE_CONFIG = null;
+/* Firebase project: service-system-89ff7
+ * Set to null to run with the built-in Node.js server instead (npm start). */
+window.FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyBsXlkqw_2RrXPfNVBaThbves20g8OvXJg',
+  authDomain: 'service-system-89ff7.firebaseapp.com',
+  projectId: 'service-system-89ff7',
+  storageBucket: 'service-system-89ff7.firebasestorage.app',
+  messagingSenderId: '963126864654',
+  appId: '1:963126864654:web:8c265806962687ba4a855f',
+};
