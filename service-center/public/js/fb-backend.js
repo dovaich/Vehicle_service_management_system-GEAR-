@@ -789,7 +789,7 @@ function init() {
       in_workshop: active.length, ready_for_delivery: by.completed || 0, waiting_parts: by.waiting_parts || 0,
       receptions_today: await cnt('receptions', W('date', '>=', t)),
       appointments_today: (await all('appointments', W('date', '==', t))).filter((a) => a.status === 'scheduled').sort((a, b) => ((a.time || '') < (b.time || '') ? -1 : 1)),
-      reminders_due: await cnt('reminders', W('open', '==', true), W('due_date', '<=', addDays(t, days))),
+      reminders_due: await cnt('reminders', W('open', '==', true), W('due_date', '<=', addDays(t, days))).catch(() => 0), // 0 while the index is building
       low_stock: await cnt('parts', W('low', '==', true)),
       wo_by_status: Object.entries(by).map(([status, n]) => ({ status, n })),
       active_orders: active.sort((a, b) => (prio[a.priority] ?? 2) - (prio[b.priority] ?? 2) || (a.date < b.date ? 1 : -1)).slice(0, 12)
@@ -800,7 +800,7 @@ function init() {
       out.revenue_today = r2(await sumOf('invoices', 'total_eff', W('date', '==', t)));
       out.revenue_month = r2(await sumOf('invoices', 'total_eff', W('date', '>=', ms), W('date', '<=', t)));
       out.collected_today = r2((await all('transactions', W('date', '==', t), W('ref_type', '==', 'invoice'))).reduce((s, x) => s + x.signed, 0));
-      out.expenses_month = r2(await sumOf('transactions', 'amount', W('is_expense', '==', true), W('date', '>=', ms)));
+      out.expenses_month = r2(await sumOf('transactions', 'amount', W('is_expense', '==', true), W('date', '>=', ms)).catch(() => 0));
       out.receivables = r2(await sumOf('customers', 'balance'));
       out.cash_balance = r2((await all('accounts')).reduce((s, a) => s + num(a.balance), 0));
       const d14 = await all('invoices', W('date', '>=', addDays(t, -13)));
