@@ -111,6 +111,7 @@
         <button class="btn btn-primary btn-block" type="submit">${t('login')}</button>
         <button class="btn btn-ghost btn-block" type="button" data-lang>${t('language')}</button>
       </form></div>`;
+    if (pub.needs_setup) return showSetup();
     const form = document.querySelector('.login-card');
     form.querySelector('[data-lang]').onclick = () => { G.lang = G.lang === 'ar' ? 'en' : 'ar'; G.setPref('lang', G.lang); G.applyLang(); G.showLogin(); };
     form.onsubmit = async (e) => {
@@ -124,6 +125,27 @@
       } catch (err) { G.fail(err); }
     };
   };
+
+  // Firebase mode, first run: create the administrator account and the center
+  function showSetup() {
+    const form = document.querySelector('.login-card');
+    form.innerHTML = `<div class="login-brand"><img src="/icons/icon.svg" alt=""><h1>${G.tl('إعداد النظام لأول مرة', 'First-time setup')}</h1>
+        <p>${G.tl('أنشئ حساب مدير النظام وبيانات المركز', 'Create the administrator account and your center')}</p></div><div class="mstripe"></div>
+      ${G.field({ name: 'center_name_ar', label: t('center_name_ar'), required: true }, 'مركز صيانة BMW')}
+      ${G.field({ name: 'center_name_en', label: t('center_name_en'), required: true }, 'BMW Service Center')}
+      ${G.field({ name: 'name', label: t('name'), required: true })}
+      ${G.field({ name: 'username', label: t('username'), required: true, help: G.tl('حروف إنجليزية صغيرة وأرقام', 'lowercase letters and digits'), attrs: 'autocapitalize="none"' }, 'admin')}
+      ${G.field({ name: 'password', label: t('password'), type: 'password', required: true, help: G.tl('6 أحرف على الأقل', 'at least 6 characters') })}
+      <button class="btn btn-primary btn-block" type="submit">${t('save')}</button>
+      <button class="btn btn-ghost btn-block" type="button" data-lang>${t('language')}</button>`;
+    form.querySelector('[data-lang]').onclick = () => { G.lang = G.lang === 'ar' ? 'en' : 'ar'; G.setPref('lang', G.lang); G.applyLang(); G.showLogin(); };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (!G.validate(form)) return;
+      const btn = form.querySelector('[type=submit]'); btn.disabled = true;
+      try { const r = await G.post('/api/auth/setup', G.readForm(form)); await start(r.user); } catch (err) { G.fail(err); btn.disabled = false; }
+    };
+  }
 
   async function start(user) {
     G.user = user;

@@ -117,7 +117,7 @@
             <div class="trow big"><span>${t('total')} (${G.tl('قبل الضريبة', 'before VAT')})</span><b>${G.money(laborTotal + partsTotal)}</b></div></section>
         </div>
         <section class="card"><h3>📷 ${t('photos')}</h3>${G.photosBlock('work_order', w.id, G.can(R.SHOP))}
-          ${w.attachments.filter((a) => a.ref_type === 'reception').length ? `<h4>${t('reception')}</h4><div class="photo-grid">${w.attachments.filter((a) => a.ref_type === 'reception').map((a) => `<div class="photo"><a href="/uploads/${a.filename}" target="_blank"><img src="/uploads/${a.filename}" alt="" loading="lazy"></a></div>`).join('')}</div>` : ''}</section>`;
+          ${w.attachments.filter((a) => a.ref_type === 'reception').length ? `<h4>${t('reception')}</h4><div class="photo-grid">${w.attachments.filter((a) => a.ref_type === 'reception').map((a) => `<div class="photo"><a href="${G.fileUrl(a)}" target="_blank" data-file><img src="${G.fileUrl(a)}" alt="" loading="lazy"></a></div>`).join('')}</div>` : ''}</section>`;
       bind();
     };
     const statusText = (wo) => G.tl(
@@ -137,7 +137,7 @@
       onMount: (m, form) => {
         const st = form.querySelector('[name=service_type_id]');
         if (st) st.onchange = () => {
-          const s = G.cache.service_types.find((x) => x.id === Number(st.value));
+          const s = G.cache.service_types.find((x) => String(x.id) === st.value);
           if (s) { form.querySelector('[name=hours]').value = s.labor_hours; form.querySelector('[name=rate]').value = s.labor_hours ? Math.round((s.labor_price / s.labor_hours) * 100) / 100 : s.labor_price; form.querySelector('[name=amount]').value = s.labor_price; }
         };
       },

@@ -75,7 +75,7 @@
       const desc = form.querySelector('[name=l_desc]').value.trim();
       const pid = form.querySelector('[name=l_part]').value;
       if (!pid && !desc) { G.toast(t('err_required'), 'err'); return; }
-      items.push({ part_id: pid ? Number(pid) : null, description: pid ? `${picked.part_no || ''} ${G.tl(picked.name_ar, picked.name_en)}`.trim() : desc, qty, unit_price: price, kind: pid ? 'part' : 'other' });
+      items.push({ part_id: pid || null, description: pid ? `${picked.part_no || ''} ${G.tl(picked.name_ar, picked.name_en)}`.trim() : desc, qty, unit_price: price, kind: pid ? 'part' : 'other' });
       form.querySelector('.lookup[data-res=parts] input[type=search]').value = '';
       form.querySelector('[name=l_part]').value = ''; form.querySelector('[name=l_desc]').value = ''; form.querySelector('[name=l_price]').value = ''; form.querySelector('[name=l_qty]').value = 1;
       picked = null;
@@ -203,7 +203,7 @@
     const loadAccounts = async () => {
       const accs = await G.loadAccounts(true);
       view.querySelector('[data-accounts]').innerHTML = accs.map((a) => `<div class="kpi ${a.balance < 0 ? 'bad' : ''}"><span class="kpi-i">${{ cash: '💵', bank: '🏦', pos: '💳', wallet: '📱' }[a.type] || '💰'}</span><div><small>${esc(a.name)}</small><b>${G.money(a.balance)}</b></div>${G.can(R.MGMT) ? `<button class="icon-btn" data-edit-acc="${a.id}">✎</button>` : ''}</div>`).join('');
-      view.querySelectorAll('[data-edit-acc]').forEach((b) => b.onclick = () => accDialog(accs.find((a) => a.id === Number(b.dataset.editAcc))));
+      view.querySelectorAll('[data-edit-acc]').forEach((b) => b.onclick = () => accDialog(accs.find((a) => String(a.id) === b.dataset.editAcc)));
     };
     const accDialog = (a = {}) => G.formDialog({
       title: a.id ? t('edit') : t('new_account'),

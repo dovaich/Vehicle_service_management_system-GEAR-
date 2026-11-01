@@ -1,0 +1,69 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "reminders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "open",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "due_date",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "is_expense",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "attachments",
+      "fieldPath": "data",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "invoices",
+      "fieldPath": "items",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "work_orders",
+      "fieldPath": "labor",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "work_orders",
+      "fieldPath": "parts",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "purchases",
+      "fieldPath": "items",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "receptions",
+      "fieldPath": "checklist",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "settings",
+      "fieldPath": "logo",
+      "indexes": []
+    }
+  ]
+}

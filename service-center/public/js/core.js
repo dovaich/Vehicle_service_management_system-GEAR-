@@ -32,7 +32,7 @@
   G.today = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
   G.monthStart = () => G.today().slice(0, 8) + '01';
   G.nowLocal = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
-  G.empName = (id) => { const e = (G.cache.employees || []).find((x) => x.id === Number(id)); return e ? e.name : ''; };
+  G.empName = (id) => { const e = (G.cache.employees || []).find((x) => String(x.id) === String(id)); return e ? e.name : ''; };
   G.vehLabel = (v) => {
     const model = v.model && v.series && String(v.model).startsWith(v.series) ? v.model : [v.series, v.model].filter(Boolean).join(' ');
     return [v.plate ? `\u2068${v.plate}\u2069` : '', [v.make && v.make !== 'BMW' ? v.make : '', model].filter(Boolean).join(' '), v.year].filter(Boolean).join(' - ');
@@ -403,7 +403,7 @@
       const grid = box.querySelector('.photo-grid');
       const render = async () => {
         const rows = (await G.get(`/api/attachments?ref_type=${refType}&ref_id=${refId}`)).rows;
-        grid.innerHTML = rows.map((a) => `<div class="photo">${a.mime === 'application/pdf' ? `<a href="/uploads/${a.filename}" target="_blank" class="pdf">PDF</a>` : `<a href="/uploads/${a.filename}" target="_blank"><img src="/uploads/${a.filename}" loading="lazy" alt=""></a>`}
+        grid.innerHTML = rows.map((a) => `<div class="photo">${a.mime === 'application/pdf' ? `<a href="${G.fileUrl(a)}" target="_blank" data-file class="pdf">PDF</a>` : `<a href="${G.fileUrl(a)}" target="_blank" data-file><img src="${G.fileUrl(a)}" loading="lazy" alt=""></a>`}
           ${G.can(G.R.SHOP) ? `<button class="icon-btn danger" data-del-photo="${a.id}">✕</button>` : ''}</div>`).join('') || `<div class="muted">${t('no_data')}</div>`;
         grid.querySelectorAll('[data-del-photo]').forEach((b) => b.onclick = async () => {
           if (!(await G.confirm(t('confirm_delete')))) return;
@@ -416,7 +416,7 @@
         try {
           for (const f of input.files) {
             const { data, mime } = await G.resizeImage(f);
-            await G.post('/api/attachments', { ref_type: refType, ref_id: Number(refId), name: f.name, mime, data });
+            await G.post('/api/attachments', { ref_type: refType, ref_id: refId, name: f.name, mime, data });
           }
           input.value = '';
           G.toast(t('saved'));
@@ -426,6 +426,16 @@
       render().catch(G.fail);
     }
   };
+
+  // ---------------- files (server: /uploads/..., Firebase: data URL stored in Firestore) ----------------
+  G.fileUrl = (a) => a.data || `/uploads/${a.filename}`;
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a[data-file]');
+    if (!a || !a.getAttribute('href').startsWith('data:')) return;
+    e.preventDefault(); // browsers block opening data: URLs in a new tab
+    const href = a.getAttribute('href');
+    G.modal({ title: t('photos'), wide: true, body: href.startsWith('data:application/pdf') ? `<iframe src="${esc(href)}" style="width:100%;height:75vh;border:0"></iframe>` : `<img src="${esc(href)}" style="width:100%;height:auto" alt="">` });
+  });
 
   // ---------------- printing ----------------
   G.print = (html) => {

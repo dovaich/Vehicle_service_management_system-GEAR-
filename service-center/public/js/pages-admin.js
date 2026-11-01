@@ -33,7 +33,7 @@
     await G.loadEmployees(true);
     const fields = (row) => [{ name: 'username', required: !row.id, attrs: row.id ? 'readonly' : 'autocapitalize="none"' }, { name: 'name', required: true },
       { name: 'role', type: 'select', options: G.opt(ROLES, 'r_'), required: true, noEmpty: true }, { name: 'employee_id', label: t('linked_employee'), type: 'select', options: G.empOptions() },
-      { name: 'password', type: 'password', required: !row.id, help: row.id ? t('password_hint') : '' }, { name: 'active', type: 'checkbox', default: 1 }];
+      ...(G.FB && row.id ? [] : [{ name: 'password', type: 'password', required: !row.id, help: row.id ? t('password_hint') : '' }]), { name: 'active', type: 'checkbox', default: 1 }];
     const load = async () => {
       const rows = (await G.get('/api/users')).rows;
       view.innerHTML = `<div class="page-head"><h2>🔐 ${t('users')}</h2><div class="head-actions"><button class="btn btn-primary" data-new>＋ ${t('add')}</button></div></div>
@@ -73,7 +73,8 @@
     ];
     view.innerHTML = `<div class="page-head"><h2>⚙ ${t('settings')}</h2></div>
       <form class="card" novalidate>${G.formHtml(fields, s)}<div class="form-actions"><button class="btn btn-primary btn-lg" type="submit">💾 ${t('save')}</button></div></form>
-      <section class="card"><h3>💾 ${t('backup')}</h3><p class="muted">${G.tl('يتم حفظ البيانات في ملف data/gear.db - احتفظ بنسخة احتياطية بشكل دوري.', 'Data is stored in data/gear.db - keep regular backups.')}</p><a class="btn" href="/api/backup">⬇ ${t('download_backup')}</a></section>`;
+      <section class="card"><h3>💾 ${t('backup')}</h3><p class="muted">${G.FB ? G.tl('البيانات محفوظة على Firebase. حمّل نسخة JSON كل فترة للاحتياط.', 'Data is stored in Firebase. Download a JSON copy regularly.') : G.tl('يتم حفظ البيانات في ملف data/gear.db - احتفظ بنسخة احتياطية بشكل دوري.', 'Data is stored in data/gear.db - keep regular backups.')}</p><button type="button" class="btn" data-backup>⬇ ${t('download_backup')}</button></section>`;
+    view.querySelector('[data-backup]').onclick = () => (G.FB ? G.FB.backup().catch(G.fail) : (location.href = '/api/backup'));
     const form = view.querySelector('form');
     form.querySelector('[data-logo]').onchange = async (e) => {
       const f = e.target.files[0]; if (!f) return;

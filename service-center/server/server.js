@@ -303,7 +303,7 @@ const RES = {
     search: ['a.name'],
     filters: { active: 'a.active' },
     order: 'a.id',
-    read: MONEY, write: MGMT,
+    read: MONEY.concat(['advisor']), write: MGMT,
     beforeDelete(id) {
       if (get('SELECT id FROM transactions WHERE account_id=? LIMIT 1', id)) throw bad('account_has_transactions');
     },

@@ -1,0 +1,63 @@
+rules_version = '2';
+// GEAR Service Center - role based access (mirrors server/server.js permissions)
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function active() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().active == 1; }
+    function hasRole(roles) { return active() && profile().role in roles; }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function MGMT() { return ['admin', 'manager']; }
+    function FRONT() { return ['admin', 'manager', 'advisor']; }
+    function MONEY() { return ['admin', 'manager', 'accountant']; }
+    function SUPP() { return ['admin', 'manager', 'accountant', 'storekeeper']; }
+    function BILL() { return ['admin', 'manager', 'advisor', 'accountant']; }
+
+    // first-run setup: the very first account becomes admin
+    match /meta/setup {
+      allow read: if true;
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/meta/setup)
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    match /users/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || hasRole(['admin']);
+      allow create: if hasRole(['admin'])
+        || (signedIn() && request.auth.uid == uid && !exists(/databases/$(database)/documents/meta/setup)
+            && existsAfter(/databases/$(database)/documents/meta/setup) && request.resource.data.role == 'admin');
+      allow update, delete: if hasRole(['admin']);
+    }
+    match /settings/{id} { allow read: if true; allow write: if hasRole(['admin']); }
+    match /counters/{id} { allow read, write: if active(); }
+    match /audit_log/{id} { allow read: if hasRole(['admin']); allow create: if active(); }
+
+    // operational data: every active staff member works on it, deletes need a manager
+    match /customers/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /vehicles/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /appointments/{id} { allow read: if active(); allow create, update, delete: if hasRole(FRONT()); }
+    match /receptions/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /diagnoses/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /work_orders/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /reminders/{id} { allow read, create, update: if active(); allow delete: if hasRole(FRONT()); }
+    match /attachments/{id} { allow read, create, delete: if active(); }
+    match /parts/{id} { allow read, update: if active(); allow create: if hasRole(['admin', 'manager', 'storekeeper']); allow delete: if hasRole(MGMT()); }
+    match /stock_moves/{id} { allow read: if hasRole(SUPP()); allow create: if active(); }
+    match /employees/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
+    match /service_types/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
+
+    // purchasing & money
+    match /suppliers/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
+    match /purchases/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
+    match /invoices/{id} { allow read, create, update: if hasRole(BILL()); }
+    match /accounts/{id} {
+      allow read: if hasRole(BILL());
+      allow create, delete: if hasRole(MGMT());
+      allow update: if hasRole(MGMT()) || (hasRole(BILL()) && onlyChanges(['balance']));
+    }
+    match /transactions/{id} {
+      allow read: if hasRole(MONEY()) || (hasRole(['advisor']) && resource.data.ref_type == 'invoice');
+      allow create: if hasRole(MONEY()) || (hasRole(['advisor']) && request.resource.data.ref_type == 'invoice');
+      allow delete: if hasRole(MONEY());
+    }
+    match /bonuses/{id} { allow read, write: if hasRole(MONEY()); }
+  }
+}
