@@ -86,7 +86,7 @@
   };
 
   // ---------------- permissions ----------------
-  G.can = (roles) => G.user && (roles === '*' || roles.includes(G.user.role));
+  G.can = (roles) => !!G.user && (roles === '*' || (G.user.roles || [G.user.role]).some((r) => roles.includes(r)));
   G.R = {
     FRONT: ['admin', 'manager', 'advisor'], SHOP: ['admin', 'manager', 'advisor', 'technician'], MONEY: ['admin', 'manager', 'accountant'],
     STORE: ['admin', 'manager', 'storekeeper'], MGMT: ['admin', 'manager'], ADMIN: ['admin'], BILL: ['admin', 'manager', 'advisor', 'accountant'],

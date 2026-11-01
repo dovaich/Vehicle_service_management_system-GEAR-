@@ -386,6 +386,8 @@ CREATE INDEX IF NOT EXISTS idx_stock_part ON stock_moves(part_id);
 `;
 
 db.exec(SCHEMA);
+// migrations
+if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name='extra_roles'").get()) db.exec('ALTER TABLE users ADD COLUMN extra_roles TEXT');
 
 // ---------- helpers ----------
 function hashPassword(pw) {

@@ -5,7 +5,7 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function active() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().active == 1; }
-    function hasRole(roles) { return active() && profile().role in roles; }
+    function hasRole(roles) { return active() && (profile().role in roles || profile().get('extra_roles', []).hasAny(roles)); }
     function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
     function MGMT() { return ['admin', 'manager']; }
     function FRONT() { return ['admin', 'manager', 'advisor']; }

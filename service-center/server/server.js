@@ -67,9 +67,15 @@ const MONEY = ['admin', 'manager', 'accountant'];
 const STORE = ['admin', 'manager', 'storekeeper'];
 const MGMT = ['admin', 'manager'];
 
+// a user has a main role plus optional extra roles (e.g. accountant + storekeeper)
+const parseRoles = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map((x) => String(x).trim()).filter((x) => ROLES.includes(x));
+const rolesOf = (u) => (u ? [...new Set([u.role, ...parseRoles(u.extra_roles)])] : []);
+const hasAny = (u, roles) => rolesOf(u).some((r) => roles.includes(r));
+const onlyIn = (u, roles) => rolesOf(u).every((r) => roles.includes(r)); // every role is restricted
+const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, roles: rolesOf(u), employee_id: u.employee_id });
 function need(user, roles) {
   if (!user) throw new HttpError(401, 'unauthorized');
-  if (!roles.includes(user.role)) throw new HttpError(403, 'forbidden');
+  if (!hasAny(user, roles)) throw new HttpError(403, 'forbidden');
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +383,7 @@ const RES = {
 };
 
 function hideCols(def, user, rows) {
-  if (!def.hideFor || !def.hideFor.roles.includes(user.role)) return rows;
+  if (!def.hideFor || !onlyIn(user, def.hideFor.roles)) return rows;
   for (const r of rows) for (const c of def.hideFor.cols) delete r[c];
   return rows;
 }
@@ -513,7 +519,7 @@ function woFull(id, user) {
                   WHERE l.work_order_id=? ORDER BY l.id`, id);
   wo.parts = all(`SELECT wp.*, p.part_no, p.name_ar, p.name_en, p.qty AS stock_qty, e.name AS technician_name FROM wo_parts wp
                   LEFT JOIN parts p ON p.id=wp.part_id LEFT JOIN employees e ON e.id=wp.technician_id WHERE wp.work_order_id=? ORDER BY wp.id`, id);
-  if (['advisor', 'technician'].includes(user.role)) wo.parts.forEach((p) => delete p.unit_cost);
+  if (onlyIn(user, ['advisor', 'technician'])) wo.parts.forEach((p) => delete p.unit_cost);
   wo.vehicle = get('SELECT * FROM vehicles WHERE id=?', wo.vehicle_id);
   wo.customer = get('SELECT * FROM customers WHERE id=?', wo.customer_id);
   wo.reception = wo.reception_id ? get('SELECT * FROM receptions WHERE id=?', wo.reception_id) : null;
@@ -615,7 +621,7 @@ function invoiceFull(id, user) {
   inv.customer = get('SELECT * FROM customers WHERE id=?', inv.customer_id);
   inv.vehicle = inv.vehicle_id ? get('SELECT * FROM vehicles WHERE id=?', inv.vehicle_id) : null;
   inv.work_order = inv.work_order_id ? get('SELECT id,no,mileage,date,completed_at,description FROM work_orders WHERE id=?', inv.work_order_id) : null;
-  if (!MONEY.includes(user.role)) { delete inv.parts_cost; inv.items.forEach((i) => delete i.unit_cost); }
+  if (!hasAny(user, MONEY)) { delete inv.parts_cost; inv.items.forEach((i) => delete i.unit_cost); }
   return inv;
 }
 
@@ -881,7 +887,7 @@ function dashboard(user) {
                         FROM work_orders w LEFT JOIN vehicles v ON v.id=w.vehicle_id LEFT JOIN customers c ON c.id=w.customer_id
                         WHERE w.status NOT IN ('delivered','cancelled') ORDER BY CASE w.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, w.id DESC LIMIT 12`),
   };
-  if (MONEY.includes(user.role)) {
+  if (hasAny(user, MONEY)) {
     out.revenue_today = r2(get("SELECT COALESCE(SUM(total),0) AS s FROM invoices WHERE date=? AND status!='cancelled'", t).s);
     out.revenue_month = r2(get("SELECT COALESCE(SUM(total),0) AS s FROM invoices WHERE substr(date,1,7)=? AND status!='cancelled'", month).s);
     out.collected_today = r2(get("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) AS s FROM transactions WHERE date=? AND ref_type='invoice'", t).s);
@@ -958,7 +964,7 @@ function currentUser(req) {
   const h = req.headers.authorization;
   if (!token && h && h.startsWith('Bearer ')) token = h.slice(7);
   if (!token) return null;
-  const u = get('SELECT u.id, u.username, u.name, u.role, u.employee_id, u.active FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?', token);
+  const u = get('SELECT u.id, u.username, u.name, u.role, u.extra_roles, u.employee_id, u.active FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?', token);
   if (!u || !u.active) return null;
   u.token = token;
   return u;
@@ -1001,14 +1007,14 @@ route('POST', '/api/auth/login', null, ({ body, req, res }) => {
   run("DELETE FROM sessions WHERE created_at < datetime('now','localtime','-30 days')");
   res.setHeader('Set-Cookie', `gear_session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${30 * 86400}${isHttps(req) ? '; Secure' : ''}`);
   audit(u, 'login', 'users', u.id);
-  return { user: { id: u.id, username: u.username, name: u.name, role: u.role }, mustChange: body.password === 'admin123' };
+  return { user: publicUser(u), mustChange: body.password === 'admin123' };
 });
 route('POST', '/api/auth/logout', ANY, ({ user, res, req }) => {
   run('DELETE FROM sessions WHERE token=?', user.token);
   res.setHeader('Set-Cookie', `gear_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${isHttps(req) ? '; Secure' : ''}`);
   return { ok: true };
 });
-route('GET', '/api/auth/me', ANY, ({ user }) => ({ user: { id: user.id, username: user.username, name: user.name, role: user.role, employee_id: user.employee_id } }));
+route('GET', '/api/auth/me', ANY, ({ user }) => ({ user: publicUser(user) }));
 route('POST', '/api/auth/password', ANY, ({ user, body }) => {
   const u = get('SELECT * FROM users WHERE id=?', user.id);
   if (!D.verifyPassword(body.current || '', u.password_hash)) throw bad('wrong_password');
@@ -1019,14 +1025,15 @@ route('POST', '/api/auth/password', ANY, ({ user, body }) => {
 });
 
 // users (admin)
-route('GET', '/api/users', ['admin'], () => ({ rows: all('SELECT u.id, u.username, u.name, u.role, u.employee_id, u.active, u.created_at, e.name AS employee_name FROM users u LEFT JOIN employees e ON e.id=u.employee_id ORDER BY u.id') }));
+route('GET', '/api/users', ['admin'], () => ({ rows: all('SELECT u.id, u.username, u.name, u.role, u.extra_roles, u.employee_id, u.active, u.created_at, e.name AS employee_name FROM users u LEFT JOIN employees e ON e.id=u.employee_id ORDER BY u.id') }));
 route('POST', '/api/users', ['admin'], ({ body, user }) => {
   const username = String(body.username || '').trim().toLowerCase();
   if (!username || !body.name) throw bad('required');
   if (!ROLES.includes(body.role)) throw bad('invalid_role');
   if (String(body.password || '').length < 6) throw bad('password_too_short');
   if (get('SELECT id FROM users WHERE username=?', username)) throw bad('username_taken');
-  const id = Number(run('INSERT INTO users(username,name,password_hash,role,employee_id,active) VALUES(?,?,?,?,?,?)', username, body.name, D.hashPassword(body.password), body.role, body.employee_id || null, body.active === 0 ? 0 : 1).lastInsertRowid);
+  const extra = parseRoles(body.extra_roles).filter((r) => r !== body.role).join(',');
+  const id = Number(run('INSERT INTO users(username,name,password_hash,role,extra_roles,employee_id,active) VALUES(?,?,?,?,?,?,?)', username, body.name, D.hashPassword(body.password), body.role, extra || null, body.employee_id || null, body.active === 0 ? 0 : 1).lastInsertRowid);
   audit(user, 'create', 'users', id);
   return { id };
 });
@@ -1037,6 +1044,7 @@ route('PUT', '/api/users/:id', ['admin'], ({ params, body, user }) => {
   if (u.id === user.id && (body.active === 0 || (body.role && body.role !== 'admin'))) throw bad('cannot_demote_self');
   run('UPDATE users SET name=COALESCE(?,name), role=COALESCE(?,role), employee_id=?, active=COALESCE(?,active) WHERE id=?',
     body.name || null, body.role || null, body.employee_id || null, body.active === undefined ? null : Number(body.active), u.id);
+  if (body.extra_roles !== undefined) run('UPDATE users SET extra_roles=? WHERE id=?', parseRoles(body.extra_roles).filter((r) => r !== (body.role || u.role)).join(',') || null, u.id);
   if (body.password) {
     if (String(body.password).length < 6) throw bad('password_too_short');
     run('UPDATE users SET password_hash=? WHERE id=?', D.hashPassword(body.password), u.id);
@@ -1079,7 +1087,7 @@ route('GET', '/api/meta', ANY, () => ({ roles: ROLES, wo_statuses: WO_STATUSES }
 route('GET', '/api/customers/:id/full', ANY, ({ params, user }) => {
   const c = getResource(RES.customers, params.id, user);
   c.vehicles = all('SELECT * FROM vehicles WHERE customer_id=? ORDER BY id DESC', c.id);
-  c.invoices = MONEY.concat(['advisor']).includes(user.role) ? all('SELECT i.id, i.no, i.date, i.total, i.paid, i.status, v.plate FROM invoices i LEFT JOIN vehicles v ON v.id=i.vehicle_id WHERE i.customer_id=? ORDER BY i.id DESC LIMIT 100', c.id) : [];
+  c.invoices = hasAny(user, MONEY.concat(['advisor'])) ? all('SELECT i.id, i.no, i.date, i.total, i.paid, i.status, v.plate FROM invoices i LEFT JOIN vehicles v ON v.id=i.vehicle_id WHERE i.customer_id=? ORDER BY i.id DESC LIMIT 100', c.id) : [];
   c.work_orders = all('SELECT w.id, w.no, w.date, w.status, v.plate, v.model FROM work_orders w LEFT JOIN vehicles v ON v.id=w.vehicle_id WHERE w.customer_id=? ORDER BY w.id DESC LIMIT 100', c.id);
   c.reminders = all("SELECT m.*, v.plate FROM reminders m LEFT JOIN vehicles v ON v.id=m.vehicle_id WHERE m.customer_id=? AND m.status IN ('pending','contacted','booked') ORDER BY due_date", c.id);
   return c;

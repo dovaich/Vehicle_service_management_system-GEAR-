@@ -72,9 +72,14 @@ function init() {
     if (!u) { me = null; return; }
     const p = await getRow('users', u.uid).catch(() => null);
     me = p && p.active ? { ...p, id: u.uid } : null;
+    if (me) me.roles = [...new Set([me.role, ...(Array.isArray(me.extra_roles) ? me.extra_roles : [])])];
   };
   const authReady = new Promise((resolve) => { const un = F.onAuthStateChanged(auth, async (u) => { un(); await loadMe(u); resolve(); }); });
-  const need = (roles) => { if (!me) throw new ApiError(401, 'unauthorized'); if (!roles.includes(me.role)) throw new ApiError(403, 'forbidden'); };
+  const hasAny = (roles) => !!me && me.roles.some((r) => roles.includes(r));
+  const onlyIn = (roles) => !!me && me.roles.every((r) => roles.includes(r));
+  const parseRoles = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map((x) => String(x).trim()).filter((x) => ROLES.includes(x));
+  const publicMe = () => ({ id: me.id, username: me.username, name: me.name, role: me.role, roles: me.roles, employee_id: me.employee_id });
+  const need = (roles) => { if (!me) throw new ApiError(401, 'unauthorized'); if (!hasAny(roles)) throw new ApiError(403, 'forbidden'); };
   const toEmail = (u) => `${String(u).trim().toLowerCase()}@${EMAIL_DOMAIN}`;
 
   // ------------------------------------------------------------------ caches (small collections)
@@ -297,7 +302,7 @@ function init() {
       },
     },
   };
-  const hide = (def, rows) => { if (def.hideFor && def.hideFor.roles.includes(me.role)) for (const r of rows) for (const c of def.hideFor.cols) delete r[c]; return rows; };
+  const hide = (def, rows) => { if (def.hideFor && onlyIn(def.hideFor.roles)) for (const r of rows) for (const c of def.hideFor.cols) delete r[c]; return rows; };
   const decorate = (name, r) => {
     if (name === 'parts') r.stock_value = r2(num(r.qty) * num(r.cost));
     if (name === 'invoices') r.due = r2(num(r.total) - num(r.paid));
@@ -485,7 +490,7 @@ function init() {
     const e = await emps();
     wo.labor = (wo.labor || []).map((l) => { const s = sts.find((x) => x.id === l.service_type_id) || {}; return { ...l, technician_name: (e.find((x) => x.id === l.technician_id) || {}).name || null, service_name_ar: s.name_ar, service_name_en: s.name_en, service_code: s.code }; });
     wo.parts = (wo.parts || []).map((p) => ({ ...p, technician_name: (e.find((x) => x.id === p.technician_id) || {}).name || null }));
-    if (['advisor', 'technician'].includes(me.role)) wo.parts.forEach((p) => delete p.unit_cost);
+    if (onlyIn(['advisor', 'technician'])) wo.parts.forEach((p) => delete p.unit_cost);
     wo.vehicle = await getRow('vehicles', wo.vehicle_id) || {};
     wo.customer = await getRow('customers', wo.customer_id) || {};
     delete wo.vehicle.kw; delete wo.customer.kw;
@@ -575,7 +580,7 @@ function init() {
     inv.vehicle = inv.vehicle_id ? await getRow('vehicles', inv.vehicle_id) : null;
     inv.work_order = inv.work_order_id ? await getRow('work_orders', inv.work_order_id) : null;
     if (inv.work_order) inv.work_order = { id: inv.work_order.id, no: inv.work_order.no, mileage: inv.work_order.mileage, date: inv.work_order.date };
-    if (!MONEY.includes(me.role)) { delete inv.parts_cost; inv.items.forEach((i) => delete i.unit_cost); }
+    if (!hasAny(MONEY)) { delete inv.parts_cost; inv.items.forEach((i) => delete i.unit_cost); }
     return inv;
   }
   async function createInvoice({ customer_id, vehicle_id, work_order_id, work_order_no, date, discount, tax_rate, notes, items }) {
@@ -798,7 +803,7 @@ function init() {
       active_orders: active.sort((a, b) => (prio[a.priority] ?? 2) - (prio[b.priority] ?? 2) || (a.date < b.date ? 1 : -1)).slice(0, 12)
         .map((w) => ({ id: w.id, no: w.no, status: w.status, priority: w.priority, date: w.date, bay: w.bay, plate: w.plate, model: w.model, series: w.series, customer_name: w.customer_name })),
     };
-    if (MONEY.includes(me.role)) {
+    if (hasAny(MONEY)) {
       // plain single-field queries only (no aggregation indexes needed)
       const from = addDays(t, -13) < ms ? addDays(t, -13) : ms;
       const invs = await safe(() => all('invoices', W('date', '>=', from)), []);
@@ -858,7 +863,7 @@ function init() {
     const find = async (c, n) => (await all(c, W('kw', 'array-contains', t), L(n))).map((r) => { delete r.kw; return r; });
     return {
       customers: await find('customers', 8), vehicles: await find('vehicles', 8), work_orders: await find('work_orders', 5),
-      invoices: BILL.includes(me.role) ? await find('invoices', 5) : [], parts: await find('parts', 5),
+      invoices: hasAny(BILL) ? await find('invoices', 5) : [], parts: await find('parts', 5),
     };
   }
 
@@ -897,7 +902,7 @@ function init() {
     for (const [code, ar, en, cat, h, price, km, mo] of DEFAULT_SERVICES) b2.set(newRef('service_types'), { code, name_ar: ar, name_en: en, category: cat, labor_hours: h, labor_price: price, interval_km: km, interval_months: mo, active: 1, kw: keywords(code, ar, en, cat) });
     await b2.commit();
     cache.settings = null;
-    return { user: { id: uid, username, name: body.name, role: 'admin' } };
+    return { user: { id: uid, username, name: body.name, role: 'admin', roles: ['admin'] } };
   }
   async function createUser(body) {
     const username = String(body.username || '').trim().toLowerCase();
@@ -916,7 +921,7 @@ function init() {
         throw e;
       }
       await F.signOut(a2);
-      await F.setDoc(ref('users', uid), { username, name: body.name, role: body.role, employee_id: body.employee_id || null, active: body.active === 0 ? 0 : 1, created_at: nowStr() });
+      await F.setDoc(ref('users', uid), { username, name: body.name, role: body.role, extra_roles: parseRoles(body.extra_roles).filter((r) => r !== body.role), employee_id: body.employee_id || null, active: body.active === 0 ? 0 : 1, created_at: nowStr() });
       await audit('create', 'users', uid);
       return { id: uid };
     } finally { await F.deleteApp(second).catch(() => {}); }
@@ -957,10 +962,10 @@ function init() {
     if (!me) { await F.signOut(auth); throw new ApiError(401, 'invalid_credentials'); }
     cache.settings = null; cache.emps = null; cache.st = null;
     await audit('login', 'users', me.id);
-    return { user: { id: me.id, username: me.username, name: me.name, role: me.role, employee_id: me.employee_id }, mustChange: false };
+    return { user: publicMe(), mustChange: false };
   });
   route('POST', '/api/auth/logout', ANY, async () => { await F.signOut(auth); me = null; return { ok: true }; });
-  route('GET', '/api/auth/me', ANY, () => ({ user: { id: me.id, username: me.username, name: me.name, role: me.role, employee_id: me.employee_id } }));
+  route('GET', '/api/auth/me', ANY, () => ({ user: publicMe() }));
   route('POST', '/api/auth/password', ANY, async ({ body }) => {
     if (String(body.password || '').length < 6) throw bad('password_too_short');
     try { await F.reauthenticateWithCredential(auth.currentUser, F.EmailAuthProvider.credential(auth.currentUser.email, body.current || '')); } catch (_) { throw bad('wrong_password'); }
@@ -977,7 +982,7 @@ function init() {
     if (body.role && !ROLES.includes(body.role)) throw bad('invalid_role');
     if (u.id === me.id && (Number(body.active) === 0 || (body.role && body.role !== 'admin'))) throw bad('cannot_demote_self');
     if (body.password) throw bad('fb_admin_password');
-    await F.updateDoc(ref('users', u.id), clean({ name: body.name || u.name, role: body.role || u.role, employee_id: body.employee_id || null, active: body.active === undefined ? u.active : Number(body.active) }));
+    await F.updateDoc(ref('users', u.id), clean({ name: body.name || u.name, role: body.role || u.role, extra_roles: body.extra_roles === undefined ? (u.extra_roles || []) : parseRoles(body.extra_roles).filter((r) => r !== (body.role || u.role)), employee_id: body.employee_id || null, active: body.active === undefined ? u.active : Number(body.active) }));
     await audit('update', 'users', u.id);
     return { ok: true };
   });
@@ -1000,7 +1005,7 @@ function init() {
     const c = await getResource('customers', params.id);
     const byDate = (a, b) => (String(a.date) < String(b.date) ? 1 : -1);
     c.vehicles = (await all('vehicles', W('customer_id', '==', c.id))).map((v) => { delete v.kw; return v; });
-    c.invoices = BILL.includes(me.role) ? (await all('invoices', W('customer_id', '==', c.id), L(200))).sort(byDate).map((i) => ({ id: i.id, no: i.no, date: i.date, total: i.total, paid: i.paid, status: i.status, plate: i.plate })) : [];
+    c.invoices = hasAny(BILL) ? (await all('invoices', W('customer_id', '==', c.id), L(200))).sort(byDate).map((i) => ({ id: i.id, no: i.no, date: i.date, total: i.total, paid: i.paid, status: i.status, plate: i.plate })) : [];
     c.work_orders = (await all('work_orders', W('customer_id', '==', c.id), L(200))).sort(byDate).map((w) => ({ id: w.id, no: w.no, date: w.date, status: w.status, plate: w.plate, model: w.model }));
     c.reminders = (await all('reminders', W('customer_id', '==', c.id), W('open', '==', true))).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
     return c;

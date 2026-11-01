@@ -33,11 +33,12 @@
     await G.loadEmployees(true);
     const fields = (row) => [{ name: 'username', required: !row.id, attrs: row.id ? 'readonly' : 'autocapitalize="none"' }, { name: 'name', required: true },
       { name: 'role', type: 'select', options: G.opt(ROLES, 'r_'), required: true, noEmpty: true }, { name: 'employee_id', label: t('linked_employee'), type: 'select', options: G.empOptions() },
+      { name: 'extra_roles', label: t('extra_roles'), type: 'chips', options: G.opt(ROLES, 'r_'), span: 2, help: t('extra_roles_help') },
       ...(G.FB && row.id ? [] : [{ name: 'password', type: 'password', required: !row.id, help: row.id ? t('password_hint') : '' }]), { name: 'active', type: 'checkbox', default: 1 }];
     const load = async () => {
       const rows = (await G.get('/api/users')).rows;
       view.innerHTML = `<div class="page-head"><h2>🔐 ${t('users')}</h2><div class="head-actions"><button class="btn btn-primary" data-new>＋ ${t('add')}</button></div></div>
-        <div class="card">${G.table([{ key: 'username' }, { key: 'name' }, { key: 'role', render: (r) => G.badge(r.role, 'r_') }, { key: 'employee_name', label: t('linked_employee') }, { key: 'active', render: (r) => (r.active ? '✔' : '✖') }, { key: 'created_at', hideMobile: true }, G.rowActions(true, true)], rows)}</div>
+        <div class="card">${G.table([{ key: 'username' }, { key: 'name' }, { key: 'role', render: (r) => [r.role, ...String(Array.isArray(r.extra_roles) ? r.extra_roles.join(',') : r.extra_roles || '').split(',').filter((x) => x && x !== r.role)].map((x) => G.badge(x, 'r_')).join(' ') }, { key: 'employee_name', label: t('linked_employee') }, { key: 'active', render: (r) => (r.active ? '✔' : '✖') }, { key: 'created_at', hideMobile: true }, G.rowActions(true, true)], rows)}</div>
         <div class="card"><h3>${t('role')}</h3><ul class="roles-help">
           <li><b>${t('r_admin')}</b>: ${G.tl('كل الصلاحيات + المستخدمين والإعدادات والنسخ الاحتياطي', 'Everything + users, settings, backup')}</li>
           <li><b>${t('r_manager')}</b>: ${G.tl('كل العمليات والحسابات والتقارير والموظفين', 'All operations, finance, reports, staff')}</li>
@@ -48,7 +49,7 @@
       view.querySelector('[data-new]').onclick = () => G.formDialog({ title: t('add'), fields: fields({}), onSubmit: async (d, close) => { await G.post('/api/users', d); close(); G.toast(t('saved')); load(); } });
       view.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => {
         const row = rows[b.closest('tr').dataset.i];
-        G.formDialog({ title: t('edit'), fields: fields(row), values: { ...row, password: '' }, onSubmit: async (d, close) => { delete d.username; if (!d.password) delete d.password; await G.put(`/api/users/${row.id}`, d); close(); G.toast(t('saved')); load(); } });
+        G.formDialog({ title: t('edit'), fields: fields(row), values: { ...row, password: '', extra_roles: Array.isArray(row.extra_roles) ? row.extra_roles.join(',') : row.extra_roles || '' }, onSubmit: async (d, close) => { delete d.username; if (!d.password) delete d.password; await G.put(`/api/users/${row.id}`, d); close(); G.toast(t('saved')); load(); } });
       });
       view.querySelectorAll('[data-delete]').forEach((b) => b.onclick = async () => {
         if (!(await G.confirm(t('confirm_delete')))) return;

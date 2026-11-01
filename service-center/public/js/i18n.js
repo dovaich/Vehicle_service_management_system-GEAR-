@@ -161,6 +161,8 @@ window.I18N = {
   // users & settings
   role: ['الصلاحية', 'Role'], r_admin: ['مدير النظام', 'Administrator'], r_manager: ['مدير المركز', 'Manager'], r_advisor: ['مستشار خدمة / استقبال', 'Service advisor'],
   r_technician: ['فني', 'Technician'], r_accountant: ['محاسب', 'Accountant'], r_storekeeper: ['أمين مخزن', 'Storekeeper'], linked_employee: ['الموظف المرتبط', 'Linked employee'],
+  extra_roles: ['صلاحيات إضافية', 'Extra roles'],
+  extra_roles_help: ['المستخدم ياخد صلاحيات الأدوار دي كمان بجانب صلاحيته الأساسية (مثلاً محاسب + أمين مخزن)', 'The user also gets these roles on top of the main role (e.g. accountant + storekeeper)'],
   password_hint: ['اتركها فارغة لعدم التغيير', 'Leave blank to keep'], center_info: ['بيانات المركز', 'Center information'], center_name_ar: ['اسم المركز (عربي)', 'Center name (Arabic)'],
   center_name_en: ['اسم المركز (إنجليزي)', 'Center name (English)'], currency: ['العملة', 'Currency'], vat_rate: ['نسبة ضريبة القيمة المضافة %', 'VAT rate %'], labor_rate: ['سعر ساعة المصنعية الافتراضي', 'Default labor rate / hour'],
   invoice_footer_ar: ['تذييل الفاتورة (عربي)', 'Invoice footer (Arabic)'], invoice_footer_en: ['تذييل الفاتورة (إنجليزي)', 'Invoice footer (English)'], reminder_settings: ['إعدادات التذكير', 'Reminder settings'],

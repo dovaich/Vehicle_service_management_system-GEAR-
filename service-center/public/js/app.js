@@ -29,7 +29,7 @@
         <div class="brand">${s.logo ? `<img src="${esc(s.logo)}" alt="">` : '<img src="/icons/icon.svg" alt="">'}<div><b>${esc(G.tl(s.center_name_ar, s.center_name_en))}</b><small>GEAR</small></div></div>
         <nav class="nav">${nav}</nav>
         <div class="side-foot">
-          <div class="me">👤 ${esc(G.user.name)} <small>${t('r_' + G.user.role)}</small></div>
+          <div class="me">👤 ${esc(G.user.name)} <small>${(G.user.roles || [G.user.role]).map((r) => t('r_' + r)).join(' + ')}</small></div>
           <button class="btn btn-ghost btn-sm" data-pw>🔑 ${t('change_password')}</button>
           <button class="btn btn-ghost btn-sm" data-logout>⎋ ${t('logout')}</button>
         </div>

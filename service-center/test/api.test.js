@@ -182,6 +182,20 @@ test('full service-center flow', async () => {
   assert.equal(woTech.parts[0].unit_cost, undefined);
   cookie = adminCookie;
 
+  // extra roles: accountant gets storekeeper powers only when granted
+  const acc = await call('POST', '/api/users', { username: 'acc1', name: 'Acc', role: 'accountant', password: 'secret1' });
+  await call('POST', '/api/auth/login', { username: 'acc1', password: 'secret1' });
+  await call('POST', '/api/stock/adjust', { part_id: oil.id, type: 'in', qty: 1 }, { expect: 403 });
+  cookie = adminCookie;
+  await call('PUT', `/api/users/${acc.id}`, { extra_roles: 'storekeeper' });
+  const me2 = await call('POST', '/api/auth/login', { username: 'acc1', password: 'secret1' });
+  assert.deepEqual(me2.user.roles.sort(), ['accountant', 'storekeeper']);
+  await call('POST', '/api/stock/adjust', { part_id: oil.id, type: 'in', qty: 1 });
+  await call('GET', '/api/accounts'); // still an accountant
+  cookie = adminCookie;
+  const urows = (await call('GET', '/api/users')).rows;
+  assert.equal(urows.find((u) => u.username === 'acc1').extra_roles, 'storekeeper');
+
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   const att = await call('POST', '/api/attachments', { ref_type: 'reception', ref_id: rec.id, mime: 'image/png', data: png });
