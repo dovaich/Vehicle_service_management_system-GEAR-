@@ -16,7 +16,7 @@
         title: t('work_order'),
         fields: [{ name: 'vehicle_id', label: t('vehicle'), type: 'lookup', res: 'vehicles', required: true, span: 2 }, { name: 'mileage', type: 'number' },
           { name: 'priority', type: 'select', options: G.opt(['normal', 'high', 'urgent']), default: 'normal', noEmpty: true },
-          { name: 'advisor_id', label: t('advisor'), type: 'select', options: G.empOptions() }, { name: 'bay' }, { name: 'description', type: 'textarea', span: 2 }],
+          { name: 'advisor_ids', label: t('advisors'), type: 'chips', options: G.empOptions(), span: 2, default: G.user.employee_id ? String(G.user.employee_id) : '' }, { name: 'bay' }, { name: 'description', type: 'textarea', span: 2 }],
         onSubmit: async (d, close) => { const w = await G.post('/api/work-orders', d); close(); location.hash = `#/work-orders/${w.id}`; },
       }),
       after: (v) => v.querySelectorAll('[data-s]').forEach((b) => b.onclick = () => { location.hash = `#/work-orders?status=${b.dataset.s}`; }),
@@ -83,7 +83,7 @@
         <div class="card info-grid">
           ${info(t('customer'), `<a href="#/customers/${w.customer_id}">${esc(w.customer.name)}</a> ${G.contactBtns(w.customer.phone, statusText(w))}`, true)}
           ${info(t('vehicle'), `<a href="#/vehicles/${w.vehicle_id}">${esc(G.vehLabel(w.vehicle))}</a>`, true)}
-          ${info('VIN', w.vehicle.vin)}${info(t('mileage'), G.int(w.mileage))}${info(t('advisor'), w.advisor_name)}${info(t('bay'), w.bay)}
+          ${info('VIN', w.vehicle.vin)}${info(t('mileage'), G.int(w.mileage))}${info(t('advisors'), w.advisor_name)}${info(t('bay'), w.bay)}
           ${info(t('date'), G.fdt(w.date))}${info(t('started_at'), G.fdt(w.started_at))}${info(t('completed_at'), G.fdt(w.completed_at))}${info(t('delivered_at'), G.fdt(w.delivered_at))}
           ${w.reception ? info(t('reception'), `<a href="#/receptions/${w.reception.id}">${esc(w.reception.no)}</a>`, true) : ''}
         </div>
@@ -195,9 +195,9 @@
       if (eb) eb.onclick = () => G.formDialog({
         title: t('edit'),
         fields: [{ name: 'mileage', type: 'number' }, { name: 'priority', type: 'select', options: G.opt(['normal', 'high', 'urgent']), noEmpty: true },
-          { name: 'advisor_id', label: t('advisor'), type: 'select', options: G.empOptions() }, { name: 'bay' },
+          { name: 'advisor_ids', label: t('advisors'), type: 'chips', options: G.empOptions(), span: 2 }, { name: 'bay' },
           { name: 'description', type: 'textarea', rows: 4, span: 2 }, { name: 'notes', type: 'textarea', span: 2 }],
-        values: w,
+        values: { ...w, advisor_ids: w.advisor_ids || (w.advisor_id ? String(w.advisor_id) : '') },
         onSubmit: async (d, close) => { await G.put(`/api/work-orders/${w.id}`, d); close(); refresh(await G.get(`/api/work-orders/${w.id}/full`)); },
       });
       const al = view.querySelector('[data-addlabor]');

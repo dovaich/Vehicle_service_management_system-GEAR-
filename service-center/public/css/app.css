@@ -140,6 +140,10 @@ a.kpi:hover { border-color: var(--primary); }
 .b-waiting_parts, .b-waiting_approval, .b-high, .b-due_soon { background: #ffe6cc; color: #a34b00; }
 .b-completed, .b-done, .b-paid, .b-approved, .b-arrived, .b-bonus, .b-in, .b-return { background: #dcf5e6; color: #146c3c; }
 .b-delivered { background: #d7ecff; color: #0b4f8a; }
+.b-present { background: #dcf5e6; color: #146c3c; } .b-absent { background: #fde2e2; color: #a12020; }
+.b-leave, .b-sick, .b-holiday { background: #e3eefc; color: #1553a8; } .b-unpaid { background: #ffe6cc; color: #a34b00; }
+.punch { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; border-inline-start: 4px solid var(--ok); }
+.punch h3 { margin: 0 0 .25rem; } .punch-btns { display: flex; gap: .5rem; }
 .b-cancelled, .b-rejected, .b-urgent, .b-overdue, .b-no_show, .b-deduction, .b-out, .b-refund, .b-purchase_return, .b-dismissed, .b-inactive { background: #fde2e2; color: #a12020; }
 .tags { display: flex; flex-wrap: wrap; gap: .35rem; }
 .tag { padding: .15em .6em; border-radius: 6px; font-size: .85rem; background: var(--bg); border: 1px solid var(--line); }

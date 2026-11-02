@@ -11,7 +11,7 @@
     { group: 'nav_workshop', items: [['#/diagnoses', 'diagnoses', '🩺', R.SHOP], ['#/work-orders', 'work_orders', '🔧', '*']] },
     { group: 'nav_finance', items: [['#/invoices', 'invoices', '🧾', R.BILL], ['#/cash', 'cash', '💰', R.MONEY], ['#/reports', 'reports', '📈', R.MONEY]] },
     { group: 'nav_store', items: [['#/parts', 'parts', '📦', '*'], ['#/stock-moves', 'stock_moves', '🔄', R.SUPP], ['#/purchases', 'purchases', '🛒', R.SUPP], ['#/suppliers', 'suppliers', '🏭', R.SUPP]] },
-    { group: 'nav_hr', items: [['#/employees', 'employees', '🧑‍🔧', R.MGMT], ['#/bonuses', 'bonuses', '🎁', R.MONEY]] },
+    { group: 'nav_hr', items: [['#/employees', 'employees', '🧑‍🔧', R.MGMT], ['#/attendance', 'attendance', '🕘', '*'], ['#/bonuses', 'bonuses', '🎁', R.MONEY]] },
     { group: 'nav_admin', items: [['#/service-types', 'service_types', '🛠', R.MGMT], ['#/users', 'users', '🔐', R.ADMIN], ['#/settings', 'settings', '⚙', R.ADMIN], ['#/audit', 'audit', '📜', R.ADMIN]] },
   ];
 

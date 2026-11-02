@@ -160,7 +160,7 @@
         break;
       case 'chips': {
         const set = new Set(Array.isArray(v) ? v : String(v || '').split(',').filter(Boolean));
-        input = `<div class="chips" data-chips="${f.name}">${f.options.map(([ov, ol]) => `<label class="chip"><input type="checkbox" value="${esc(ov)}" ${set.has(ov) ? 'checked' : ''}><span>${esc(ol)}</span></label>`).join('')}</div>`;
+        input = `<div class="chips" data-chips="${f.name}">${f.options.map(([ov, ol]) => `<label class="chip"><input type="checkbox" value="${esc(ov)}" ${set.has(String(ov)) ? 'checked' : ''}><span>${esc(ol)}</span></label>`).join('')}</div>`;
         break;
       }
       case 'segment':

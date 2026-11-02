@@ -196,6 +196,51 @@ test('full service-center flow', async () => {
   const urows = (await call('GET', '/api/users')).rows;
   assert.equal(urows.find((u) => u.username === 'acc1').extra_roles, 'storekeeper');
 
+  // multiple service advisors on a reception -> copied to the work order
+  const adv2 = await call('POST', '/api/employees', { name: 'Omar Advisor', job: 'advisor', salary: 6000 });
+  const rec2 = await call('POST', '/api/receptions', { vehicle_id: veh.id, mileage: 91000, complaints: 'check', advisor_ids: `${adv.id},${adv2.id}` });
+  assert.equal(rec2.advisor_ids, `${adv.id},${adv2.id}`);
+  assert.equal(rec2.advisor_id, adv.id);
+  assert.match(rec2.advisor_name, /Sara/); assert.match(rec2.advisor_name, /Omar/);
+  const wo2 = await call('POST', `/api/receptions/${rec2.id}/work-order`, {});
+  assert.equal((await call('GET', `/api/work-orders/${wo2.id}`)).advisor_ids, `${adv.id},${adv2.id}`);
+
+  // attendance-based payroll (September 2026: weekend = Friday)
+  await call('PUT', '/api/settings', { attendance_payroll: '1', work_start: '09:00', work_end: '17:00', work_days_month: '26', weekend_days: '5', late_grace: '15', overtime_rate: '1.5', deduct_late: '1' });
+  const mE = await call('POST', '/api/employees', { name: 'Monthly Guy', job: 'technician', pay_type: 'monthly', salary: 2600, hire_date: '2026-09-28' });
+  const dE = await call('POST', '/api/employees', { name: 'Daily Guy', job: 'washer', pay_type: 'daily', salary: 300, hire_date: '2026-09-28' });
+  for (const e of [mE, dE]) {
+    await call('PUT', '/api/attendance', { employee_id: e.id, date: '2026-09-28', status: 'present', check_in: '09:30', check_out: '17:00' }); // 30 min late
+    await call('PUT', '/api/attendance', { employee_id: e.id, date: '2026-09-29', status: 'present', check_in: '09:00', check_out: '19:00' }); // 2h overtime
+    // 2026-09-30: no record -> absent
+  }
+  const mm = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`);
+  assert.equal(mm.present_days, 2); assert.equal(mm.absent_days, 1); assert.equal(mm.late_minutes, 30); assert.equal(mm.overtime_minutes, 120);
+  assert.equal(mm.absence_deduction, 100); assert.equal(mm.late_deduction, 6.25); assert.equal(mm.overtime_pay, 37.5); assert.equal(mm.salary_due, 2531.25);
+  const dm = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${dE.id}`);
+  assert.equal(dm.salary_due, 693.75);
+  const prSep = await call('GET', '/api/payroll?period=2026-09');
+  assert.equal(prSep.find((x) => x.employee_id === mE.id).net, 2531.25);
+  await call('PUT', '/api/settings', { attendance_payroll: '0' });
+  assert.equal((await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`)).salary_due, 2600, 'off = full salary');
+
+  // self check-in / check-out at the server clock
+  await call('POST', '/api/users', { username: 'emp1', name: 'Emp', role: 'technician', password: 'secret1', employee_id: mE.id });
+  await call('POST', '/api/auth/login', { username: 'emp1', password: 'secret1' });
+  assert.equal((await call('GET', '/api/attendance/me')).record, null);
+  const pin = await call('POST', '/api/attendance/punch', { action: 'in', employee_id: dE.id }); // cannot punch for someone else
+  assert.equal(pin.employee_id, mE.id);
+  await call('POST', '/api/attendance/punch', { action: 'in' }, { expect: 400 });
+  const pout = await call('POST', '/api/attendance/punch', { action: 'out' });
+  assert.ok(pout.check_in && pout.check_out);
+  const own = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${dE.id}`);
+  assert.equal(own.employee.id, mE.id, 'staff only see their own sheet');
+  assert.equal(own.salary_due, undefined, 'no salary numbers for staff');
+  await call('PUT', '/api/attendance', { employee_id: mE.id, date: '2026-09-30', status: 'present' }, { expect: 403 });
+  await call('GET', '/api/attendance', undefined, { expect: 403 });
+  cookie = adminCookie;
+  assert.equal((await call('GET', '/api/attendance')).rows.find((r) => r.employee_id === mE.id).record.check_in, pout.check_in);
+
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   const att = await call('POST', '/api/attachments', { ref_type: 'reception', ref_id: rec.id, mime: 'image/png', data: png });

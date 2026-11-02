@@ -343,16 +343,20 @@
         };
         await load();
       } else {
-        body.innerHTML = `<div class="toolbar">${G.field({ name: 'period', label: t('month'), type: 'month' }, G.today().slice(0, 7))}</div><div class="card" data-out></div>`;
+        body.innerHTML = `<div class="toolbar">${G.field({ name: 'period', label: t('month'), type: 'month' }, G.today().slice(0, 7))}<a class="btn" href="#/attendance">🕘 ${t('attendance')}</a></div>
+          ${G.settings.attendance_payroll === '1' ? '' : `<p class="alert">${t('attendance_payroll_off')}</p>`}<div class="card" data-out></div>`;
         const load = async () => {
           const period = body.querySelector('[name=period]').value;
           const rows = await G.get('/api/payroll?period=' + period);
           body.querySelector('[data-out]').innerHTML = G.table([
-            { key: 'name', label: t('employee') }, { key: 'job', render: (r) => t('j_' + r.job) }, { key: 'salary', cls: 'num', render: (r) => G.money(r.salary) },
+            { key: 'name', label: t('employee'), render: (r) => `<b>${esc(r.name)}</b><br><small class="muted">${t('j_' + r.job)} · ${t('pay_' + (r.pay_type || 'monthly'))}</small>` },
+            { key: 'salary', cls: 'num', render: (r) => G.money(r.salary) },
+            { key: 'att', label: t('attendance'), render: (r) => `<small>${t('present_days')}: <b>${r.present_days}</b> · ${t('absent_days')}: <b class="${r.absent_days + r.unpaid_days ? 'neg' : ''}">${r.absent_days + r.unpaid_days}</b><br>${t('late_minutes')}: ${r.late_minutes + r.early_minutes} · ${t('overtime')}: ${Math.round(r.overtime_minutes / 6) / 10}h</small>` },
+            { key: 'salary_due', cls: 'num', render: (r) => `${G.money(r.salary_due)}${r.by_attendance && (r.absence_deduction || r.late_deduction || r.overtime_pay) ? `<br><small class="muted">-${G.num(r.absence_deduction + r.late_deduction)} +${G.num(r.overtime_pay)}</small>` : ''}` },
             { key: 'salary_paid', cls: 'num', render: (r) => G.money(r.salary_paid) }, { key: 'bonuses', label: t('bonus'), cls: 'num', render: (r) => `<span class="pos">${G.money(r.bonuses)}</span>` },
             { key: 'deductions', cls: 'num', render: (r) => `<span class="neg">${G.money(r.deductions)}</span>` }, { key: 'net', cls: 'num', render: (r) => `<b>${G.money(r.net)}</b>` },
             { key: 'a', label: '', render: (r) => (r.net > 0 ? `<button class="btn btn-sm btn-primary" data-pay>💵 ${t('pay')}</button>` : '') },
-          ], rows, { foot: `<tr><td colspan="6" data-label=""></td><td class="num" data-label="${t('net')}"><b>${G.money(rows.reduce((s, r) => s + Math.max(0, r.net), 0))}</b></td><td></td></tr>` });
+          ], rows, { foot: `<tr><td colspan="7" data-label=""></td><td class="num" data-label="${t('net')}"><b>${G.money(rows.reduce((s, r) => s + Math.max(0, r.net), 0))}</b></td><td></td></tr>` });
           body.querySelectorAll('[data-pay]').forEach((b) => b.onclick = async () => {
             const r = rows[b.closest('tr').dataset.i];
             const accounts = await G.loadAccounts(true);

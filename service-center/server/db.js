@@ -388,6 +388,22 @@ CREATE INDEX IF NOT EXISTS idx_stock_part ON stock_moves(part_id);
 db.exec(SCHEMA);
 // migrations
 if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name='extra_roles'").get()) db.exec('ALTER TABLE users ADD COLUMN extra_roles TEXT');
+if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_type'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_type TEXT DEFAULT 'monthly'");
+db.exec(`CREATE TABLE IF NOT EXISTS attendance (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'present',
+  check_in TEXT,
+  check_out TEXT,
+  notes TEXT,
+  user_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  UNIQUE(employee_id, date)
+)`);
+for (const t of ['receptions', 'work_orders']) {
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name='advisor_ids'`).get()) db.exec(`ALTER TABLE ${t} ADD COLUMN advisor_ids TEXT`);
+}
 
 // ---------- helpers ----------
 function hashPassword(pw) {
@@ -449,6 +465,14 @@ function seed() {
     invoice_footer_ar: 'شكراً لثقتكم - ضمان العمالة 30 يوم',
     invoice_footer_en: 'Thank you for your trust - 30 days labor warranty',
     reminder_days_ahead: '30',
+    work_start: '09:00',
+    work_end: '17:00',
+    work_days_month: '26',
+    weekend_days: '5',
+    late_grace: '15',
+    overtime_rate: '1.5',
+    attendance_payroll: '0',
+    deduct_late: '1',
     reminder_km_ahead: '1000',
     avg_km_per_month: '1500',
   };

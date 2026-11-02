@@ -64,6 +64,7 @@
       <div class="page-head"><h2>${t('nav_dashboard')}</h2><div class="head-actions">
         ${G.can(R.FRONT) ? `<a class="btn btn-primary" href="#/receptions/new">🚘 ${t('new_reception')}</a><button class="btn" data-newcust>👤 ${t('new_customer')}</button><button class="btn" data-newappt>📅 ${t('new_appointment')}</button>` : ''}
         ${G.can(R.BILL) ? `<a class="btn" href="#/invoices/new">🧾 ${t('counter_sale')}</a>` : ''}</div></div>
+      <div data-punch></div>
       <div class="kpis">
         ${kpi('🔧', t('in_workshop'), G.int(d.in_workshop), '#/work-orders')}
         ${kpi('✅', t('ready_for_delivery'), G.int(d.ready_for_delivery), '#/work-orders?status=completed', 'ok')}
@@ -90,6 +91,7 @@
         </section>
       </div>`;
     G.bindRowLinks(view);
+    if (G.punchCard) G.punchCard(view.querySelector('[data-punch]'));
     const nc = view.querySelector('[data-newcust]');
     if (nc) nc.onclick = () => G.newCustomerVehicle((v) => { location.hash = `#/vehicles/${v.id}`; });
     const na = view.querySelector('[data-newappt]');
@@ -264,7 +266,7 @@
             ${G.can(R.FRONT) ? `<button type="button" class="btn" data-newcv>＋ ${t('customer_and_vehicle')}</button>` : ''}</div>
             <div class="veh-card" data-vcard></div></div>
           ${G.field({ name: 'mileage', type: 'number', required: true }, rec.mileage)}
-          ${G.field({ name: 'advisor_id', label: t('advisor'), type: 'select', options: G.empOptions() }, rec.advisor_id || G.user.employee_id)}
+          ${G.field({ name: 'advisor_ids', label: t('advisors'), type: 'chips', options: G.empOptions(), span: 2 }, rec.advisor_ids || rec.advisor_id || G.user.employee_id || '')}
           ${G.field({ name: 'fuel_level', type: 'segment', options: G.FUEL_LEVELS, span: 2 }, rec.fuel_level || '1/2')}
           ${G.field({ name: 'complaints', type: 'textarea', rows: 4, required: true, span: 2 }, rec.complaints)}
           ${G.field({ name: 'warning_lights', type: 'chips', options: G.WARNING_LIGHTS.map((k) => [k, t('wl_' + k)]), span: 2 }, rec.warning_lights)}
@@ -338,7 +340,7 @@
     const split = (s) => String(s || '').split(',').filter(Boolean);
     const both = (k) => `${window.I18N[k] ? window.I18N[k][0] + ' / ' + window.I18N[k][1] : k}`;
     G.print(`<h2 class="doc-title">${both('reception')} - ${esc(r.no)}</h2>
-      <table class="ptbl"><tr><th>${both('date')}</th><td>${G.fdt(r.date)}</td><th>${both('advisor')}</th><td>${esc(r.advisor_name || '')}</td></tr>
+      <table class="ptbl"><tr><th>${both('date')}</th><td>${G.fdt(r.date)}</td><th>${both('advisors')}</th><td>${esc(r.advisor_name || '')}</td></tr>
       <tr><th>${both('customer')}</th><td>${esc(r.customer_name)} - ${esc(r.customer_phone || '')}</td><th>${both('plate')}</th><td>${esc(r.plate)}</td></tr>
       <tr><th>${both('vehicle')}</th><td>${esc(`${r.series || ''} ${r.model || ''} ${r.year || ''} ${r.color || ''}`)}</td><th>VIN</th><td>${esc(r.vin || '')}</td></tr>
       <tr><th>${both('mileage')}</th><td>${G.int(r.mileage)}</td><th>${both('fuel_level')}</th><td>${esc(r.fuel_level || '')}</td></tr>
@@ -368,7 +370,7 @@
         ${info(t('customer'), `<a href="#/customers/${r.customer_id}">${esc(r.customer_name)}</a> ${G.contactBtns(r.customer_phone)}`, true)}
         ${info(t('vehicle'), `<a href="#/vehicles/${r.vehicle_id}">${esc(`${r.plate} ${r.series || ''} ${r.model || ''}`)}</a>`, true)}
         ${info('VIN', r.vin)}${info(t('date'), G.fdt(r.date))}${info(t('mileage'), G.int(r.mileage))}${info(t('fuel_level'), r.fuel_level)}
-        ${info(t('advisor'), r.advisor_name)}${info(t('expected_delivery'), G.fdt(r.expected_delivery))}${info(t('driver_name'), [r.driver_name, r.driver_phone].filter(Boolean).join(' - '))}
+        ${info(t('advisors'), r.advisor_name)}${info(t('expected_delivery'), G.fdt(r.expected_delivery))}${info(t('driver_name'), [r.driver_name, r.driver_phone].filter(Boolean).join(' - '))}
       </div>
       <div class="grid-2">
         <section class="card"><h3>${t('complaints')}</h3><p class="pre">${esc(r.complaints || '-')}</p>

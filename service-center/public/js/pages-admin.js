@@ -7,13 +7,14 @@
   G.addRoute('/employees', (view) => G.listPage(view, {
     title: t('employees'), res: 'employees', csvName: 'employees',
     fields: [{ name: 'name', required: true, span: 2 }, { name: 'phone', type: 'tel' }, { name: 'job', type: 'select', options: G.opt(JOBS, 'j_'), default: 'technician', noEmpty: true },
-      { name: 'national_id' }, { name: 'hire_date', type: 'date' }, { name: 'salary', type: 'number' }, { name: 'labor_commission', type: 'number', help: G.tl('نسبة من مصنعية الشغلانات التي نفذها', '% of labor the employee performed') },
+      { name: 'national_id' }, { name: 'hire_date', type: 'date' }, { name: 'pay_type', type: 'select', options: G.opt(['monthly', 'daily', 'hourly'], 'pay_'), default: 'monthly', noEmpty: true },
+      { name: 'salary', label: t('salary_amount'), type: 'number', help: t('salary_amount_help') }, { name: 'labor_commission', type: 'number', help: G.tl('نسبة من مصنعية الشغلانات التي نفذها', '% of labor the employee performed') },
       { name: 'parts_commission', type: 'number' }, { name: 'active', type: 'checkbox', default: 1 }, { name: 'notes', type: 'textarea', span: 2 }],
     filters: [{ name: 'job', type: 'select', options: G.opt(JOBS, 'j_') }],
     onSaved: () => G.loadEmployees(true),
     rowCls: (r) => (r.active ? '' : 'row-off'),
     columns: [{ key: 'name', render: (r) => `<b>${esc(r.name)}</b>${r.active ? '' : ' ' + G.badge('inactive')}` }, { key: 'job', render: (r) => t('j_' + r.job) }, { key: 'phone' },
-      { key: 'hire_date', hideMobile: true }, { key: 'salary', cls: 'num', render: (r) => G.money(r.salary) }, { key: 'labor_commission', cls: 'num', render: (r) => G.num(r.labor_commission) + '%' },
+      { key: 'hire_date', hideMobile: true }, { key: 'salary', cls: 'num', render: (r) => `${G.money(r.salary)}<br><small class="muted">${t('pay_' + (r.pay_type || 'monthly'))}</small>` }, { key: 'labor_commission', cls: 'num', render: (r) => G.num(r.labor_commission) + '%' },
       { key: 'parts_commission', cls: 'num', hideMobile: true, render: (r) => G.num(r.parts_commission) + '%' }, G.rowActions(true, true)],
   }), R.MGMT);
 
@@ -70,6 +71,12 @@
       { html: `<div class="field"><label>${t('logo')}</label><div class="row-flex">${s.logo ? `<img src="${esc(s.logo)}" class="logo-prev" alt="">` : ''}<label class="btn">📁 ${t('logo')}<input type="file" accept="image/*" hidden data-logo></label>${s.logo ? `<button type="button" class="btn btn-ghost" data-rmlogo>✕</button>` : ''}</div><input type="hidden" name="logo" value="${esc(s.logo || '')}"></div>` },
       { html: `<h3 class="span-2 sec-title">${t('reminder_settings')}</h3>` },
       { name: 'reminder_days_ahead', type: 'number' }, { name: 'reminder_km_ahead', type: 'number' }, { name: 'avg_km_per_month', type: 'number' }, { html: '<div></div>' },
+      { html: `<h3 class="span-2 sec-title">🕘 ${t('attendance_settings')}</h3>` },
+      { name: 'attendance_payroll', type: 'select', options: [['0', t('no')], ['1', t('yes')]], noEmpty: true, span: 2, help: t('attendance_payroll_help') },
+      { name: 'work_start', type: 'time' }, { name: 'work_end', type: 'time' },
+      { name: 'work_days_month', type: 'number', help: t('work_days_month_help') }, { name: 'late_grace', type: 'number' },
+      { name: 'overtime_rate', type: 'number', help: t('overtime_rate_help') }, { name: 'deduct_late', type: 'select', options: [['1', t('yes')], ['0', t('no')]], noEmpty: true },
+      { name: 'weekend_days', type: 'chips', options: G.WEEKDAYS().map((d, i) => [String(i), d]), span: 2 },
       { name: 'whatsapp_template_ar', type: 'textarea', span: 2, help: t('template_hint') }, { name: 'whatsapp_template_en', type: 'textarea', span: 2, help: t('template_hint') },
     ];
     view.innerHTML = `<div class="page-head"><h2>⚙ ${t('settings')}</h2></div>

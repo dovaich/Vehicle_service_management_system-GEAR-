@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const D = require('./db');
+const PAY = require('../public/js/payroll-calc');
 const { all, get, run, tx, getSetting } = D;
 
 const PORT = Number(process.env.PORT || 3000);
@@ -109,7 +110,7 @@ const RES = {
   },
   employees: {
     table: 'employees',
-    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
+    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
     required: ['name'],
     select: 'SELECT e.* FROM employees e',
     alias: 'e',
@@ -146,10 +147,10 @@ const RES = {
   },
   receptions: {
     table: 'receptions',
-    cols: ['vehicle_id', 'customer_id', 'date', 'mileage', 'fuel_level', 'complaints', 'checklist', 'damages', 'belongings', 'warning_lights', 'advisor_id', 'expected_delivery', 'driver_name', 'driver_phone', 'status', 'notes'],
+    cols: ['vehicle_id', 'customer_id', 'date', 'mileage', 'fuel_level', 'complaints', 'checklist', 'damages', 'belongings', 'warning_lights', 'advisor_id', 'advisor_ids', 'expected_delivery', 'driver_name', 'driver_phone', 'status', 'notes'],
     required: ['vehicle_id'],
     select: `SELECT r.*, c.name AS customer_name, c.phone AS customer_phone, v.plate, v.vin, v.model, v.series, v.color, v.year,
-             e.name AS advisor_name, (SELECT id FROM work_orders w WHERE w.reception_id=r.id LIMIT 1) AS work_order_id,
+             COALESCE((SELECT group_concat(x.name, '، ') FROM employees x WHERE r.advisor_ids IS NOT NULL AND (',' || r.advisor_ids || ',') LIKE ('%,' || x.id || ',%')), e.name) AS advisor_name, (SELECT id FROM work_orders w WHERE w.reception_id=r.id LIMIT 1) AS work_order_id,
              (SELECT id FROM diagnoses d WHERE d.reception_id=r.id ORDER BY d.id DESC LIMIT 1) AS diagnosis_id
              FROM receptions r LEFT JOIN customers c ON c.id=r.customer_id LEFT JOIN vehicles v ON v.id=r.vehicle_id
              LEFT JOIN employees e ON e.id=r.advisor_id`,
@@ -160,6 +161,7 @@ const RES = {
     order: 'r.id DESC',
     read: ANY, write: FRONT,
     beforeSave(data) {
+      normalizeAdvisors(data);
       if (data.vehicle_id && !data.customer_id) {
         const v = get('SELECT customer_id FROM vehicles WHERE id=?', data.vehicle_id);
         if (!v) throw bad('vehicle_not_found');
@@ -196,9 +198,9 @@ const RES = {
   },
   work_orders: {
     table: 'work_orders',
-    cols: ['reception_id', 'diagnosis_id', 'vehicle_id', 'customer_id', 'date', 'mileage', 'priority', 'bay', 'advisor_id', 'description', 'qc_checklist', 'qc_by', 'notes'],
+    cols: ['reception_id', 'diagnosis_id', 'vehicle_id', 'customer_id', 'date', 'mileage', 'priority', 'bay', 'advisor_id', 'advisor_ids', 'description', 'qc_checklist', 'qc_by', 'notes'],
     required: ['vehicle_id'],
-    select: `SELECT w.*, c.name AS customer_name, c.phone AS customer_phone, v.plate, v.model, v.series, v.vin, e.name AS advisor_name,
+    select: `SELECT w.*, c.name AS customer_name, c.phone AS customer_phone, v.plate, v.model, v.series, v.vin, COALESCE((SELECT group_concat(x.name, '، ') FROM employees x WHERE w.advisor_ids IS NOT NULL AND (',' || w.advisor_ids || ',') LIKE ('%,' || x.id || ',%')), e.name) AS advisor_name,
              i.no AS invoice_no, i.status AS invoice_status,
              (SELECT COALESCE(SUM(amount),0) FROM wo_labor WHERE work_order_id=w.id) AS labor_total,
              (SELECT COALESCE(SUM(amount),0) FROM wo_parts WHERE work_order_id=w.id) AS parts_total,
@@ -212,6 +214,7 @@ const RES = {
     order: 'w.id DESC',
     read: ANY, write: SHOP,
     beforeSave(data) {
+      normalizeAdvisors(data);
       if (data.vehicle_id && !data.customer_id) {
         const v = get('SELECT customer_id FROM vehicles WHERE id=?', data.vehicle_id);
         if (!v) throw bad('vehicle_not_found');
@@ -381,6 +384,17 @@ const RES = {
     },
   },
 };
+
+// several service advisors per car: advisor_ids = "3,7"; advisor_id keeps the first one
+function normalizeAdvisors(data) {
+  if (data.advisor_ids !== undefined) {
+    const ids = [...new Set(String(data.advisor_ids || '').split(',').map((x) => x.trim()).filter((x) => /^\d+$/.test(x)))];
+    data.advisor_ids = ids.length ? ids.join(',') : null;
+    data.advisor_id = ids.length ? Number(ids[0]) : null;
+  } else if (data.advisor_id !== undefined) {
+    data.advisor_ids = data.advisor_id ? String(data.advisor_id) : null;
+  }
+}
 
 function hideCols(def, user, rows) {
   if (!def.hideFor || !onlyIn(user, def.hideFor.roles)) return rows;
@@ -823,16 +837,24 @@ function commissions(from, to) {
   });
 }
 
+const ATT_STATUSES = ['present', 'absent', 'leave', 'sick', 'holiday', 'unpaid'];
+const nowHM = () => nowStr().slice(11, 16);
+function attendanceCalc(e, period) {
+  const recs = all("SELECT * FROM attendance WHERE employee_id=? AND substr(date,1,7)=?", e.id, period);
+  return PAY.calc(e, recs, period, D.allSettings(), today());
+}
 function payroll(period) {
   // period = YYYY-MM
-  const emps = all('SELECT id, name, job, salary FROM employees WHERE active=1 ORDER BY name');
+  const emps = all('SELECT id, name, job, salary, pay_type, hire_date FROM employees WHERE active=1 ORDER BY name');
   return emps.map((e) => {
+    const a = attendanceCalc(e, period);
     const b = get(`SELECT COALESCE(SUM(CASE WHEN type='deduction' THEN 0 ELSE amount END),0) AS plus,
                           COALESCE(SUM(CASE WHEN type='deduction' THEN amount ELSE 0 END),0) AS minus
                    FROM bonuses WHERE employee_id=? AND paid=0`, e.id);
     const salaryPaid = get("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE category='salary' AND party_type='employee' AND party_id=? AND description LIKE ?", e.id, `%${period}%`).s;
-    const net = r2(num(e.salary) - r2(salaryPaid) + b.plus - b.minus);
-    return { employee_id: e.id, name: e.name, job: e.job, salary: e.salary, salary_paid: r2(salaryPaid), bonuses: r2(b.plus), deductions: r2(b.minus), net };
+    const net = r2(a.salary_due - r2(salaryPaid) + b.plus - b.minus);
+    delete a.days;
+    return { employee_id: e.id, name: e.name, job: e.job, salary: e.salary, ...a, salary_paid: r2(salaryPaid), bonuses: r2(b.plus), deductions: r2(b.minus), net };
   });
 }
 
@@ -844,7 +866,7 @@ function payPayroll(body, user) {
   return tx(() => {
     const row = payroll(period).find((x) => x.employee_id === Number(employee_id));
     if (!row) throw bad('not_found');
-    const salaryDue = r2(num(e.salary) - row.salary_paid);
+    const salaryDue = r2(row.salary_due - row.salary_paid);
     if (salaryDue > 0 && body.include_salary !== false) {
       run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id) VALUES(?,?,?,?,?,?,?,?,?)`,
         today(), account_id, 'out', salaryDue, 'salary', `Salary ${period} - ${e.name}`, 'employee', e.id, user.id);
@@ -1062,7 +1084,8 @@ route('DELETE', '/api/users/:id', ['admin'], ({ params, user }) => {
 
 // settings
 const PUBLIC_SETTINGS = ['center_name_ar', 'center_name_en', 'center_phone', 'center_address', 'tax_no', 'currency', 'vat_rate', 'labor_rate',
-  'invoice_footer_ar', 'invoice_footer_en', 'reminder_days_ahead', 'reminder_km_ahead', 'avg_km_per_month', 'allow_negative_stock', 'logo', 'whatsapp_template_ar', 'whatsapp_template_en'];
+  'invoice_footer_ar', 'invoice_footer_en', 'reminder_days_ahead', 'reminder_km_ahead', 'avg_km_per_month', 'allow_negative_stock', 'logo', 'whatsapp_template_ar', 'whatsapp_template_en',
+  'work_start', 'work_end', 'work_days_month', 'weekend_days', 'late_grace', 'overtime_rate', 'attendance_payroll', 'deduct_late'];
 route('GET', '/api/settings', ANY, () => {
   const s = D.allSettings();
   const o = {};
@@ -1118,7 +1141,7 @@ route('POST', '/api/receptions/:id/work-order', SHOP, ({ params, user, body }) =
   const desc = [r.complaints, d && d.recommendations].filter(Boolean).join('\n---\n');
   const wo = createResource('work_orders', RES.work_orders, {
     reception_id: r.id, diagnosis_id: d ? d.id : null, vehicle_id: r.vehicle_id, customer_id: r.customer_id,
-    mileage: r.mileage, advisor_id: r.advisor_id, description: desc, priority: body.priority || 'normal',
+    mileage: r.mileage, advisor_ids: r.advisor_ids || (r.advisor_id ? String(r.advisor_id) : ''), description: desc, priority: body.priority || 'normal',
   }, user);
   return { id: wo.id };
 });
@@ -1322,6 +1345,66 @@ route('POST', '/api/bonuses/commissions/approve', MONEY, ({ body, user }) => {
 route('GET', '/api/payroll', MONEY, ({ query }) => payroll(query.period || today().slice(0, 7)));
 route('POST', '/api/payroll/pay', MONEY, ({ body, user }) => payPayroll(body, user));
 
+// attendance (check-in / check-out)
+const ATT_READ = ['admin', 'manager', 'accountant'];
+route('GET', '/api/attendance', ATT_READ, ({ query }) => {
+  const date = query.date || today();
+  const emps = all('SELECT id, name, job FROM employees WHERE active=1 ORDER BY name');
+  const recs = all('SELECT * FROM attendance WHERE date=?', date);
+  const cfg = PAY.config(D.allSettings());
+  const work = !cfg.weekend.includes(PAY.weekday(date));
+  return {
+    date, work_day: work,
+    rows: emps.map((e) => { const r = recs.find((x) => x.employee_id === e.id); return { employee_id: e.id, name: e.name, job: e.job, record: r || null, ...PAY.dayStats(r, cfg, work) }; }),
+  };
+});
+route('GET', '/api/attendance/month', ANY, ({ query, user }) => {
+  const period = query.period || today().slice(0, 7);
+  let empId = Number(query.employee_id || user.employee_id);
+  if (!hasAny(user, ATT_READ)) empId = Number(user.employee_id); // staff see only their own sheet
+  const e = get('SELECT id, name, job, salary, pay_type, hire_date FROM employees WHERE id=?', empId);
+  if (!e) throw new HttpError(404, 'not_found');
+  const res = attendanceCalc(e, period);
+  if (!hasAny(user, ATT_READ)) { for (const k of ['salary', 'salary_due', 'absence_deduction', 'late_deduction', 'overtime_pay']) delete res[k]; }
+  return { employee: { id: e.id, name: e.name, job: e.job, pay_type: e.pay_type }, period, ...res };
+});
+route('GET', '/api/attendance/me', ANY, ({ user }) => {
+  if (!user.employee_id) return { linked: false };
+  return { linked: true, date: today(), record: get('SELECT * FROM attendance WHERE employee_id=? AND date=?', user.employee_id, today()) || null };
+});
+route('POST', '/api/attendance/punch', ANY, ({ body, user }) => {
+  // managers punch anyone; everyone else only themselves, always at the server's clock
+  const empId = body.employee_id && hasAny(user, MGMT) ? Number(body.employee_id) : Number(user.employee_id);
+  if (!empId) throw bad('not_linked_employee');
+  if (!get('SELECT id FROM employees WHERE id=?', empId)) throw new HttpError(404, 'not_found');
+  const d = today(); const tm = nowHM();
+  const r = get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, d);
+  if (body.action === 'out') {
+    if (!r || !r.check_in) throw bad('not_checked_in');
+    if (r.check_out && !hasAny(user, MGMT)) throw bad('already_checked_out');
+    run('UPDATE attendance SET check_out=? WHERE id=?', tm, r.id);
+  } else {
+    if (r && r.check_in && !hasAny(user, MGMT)) throw bad('already_checked_in');
+    if (r) run("UPDATE attendance SET check_in=?, status='present' WHERE id=?", tm, r.id);
+    else run("INSERT INTO attendance(employee_id,date,status,check_in,user_id) VALUES(?,?,'present',?,?)", empId, d, tm, user.id);
+  }
+  audit(user, 'punch:' + (body.action || 'in'), 'attendance', empId);
+  return get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, d);
+});
+route('PUT', '/api/attendance', MGMT, ({ body, user }) => {
+  const empId = Number(body.employee_id); const date = String(body.date || '').slice(0, 10);
+  if (!empId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw bad('required');
+  const status = ATT_STATUSES.includes(body.status) ? body.status : 'present';
+  const hm = (v) => (v && /^\d{1,2}:\d{2}/.test(v) ? String(v).slice(0, 5).padStart(5, '0') : null);
+  const ci = status === 'present' ? hm(body.check_in) : null; const co = status === 'present' ? hm(body.check_out) : null;
+  run(`INSERT INTO attendance(employee_id,date,status,check_in,check_out,notes,user_id) VALUES(?,?,?,?,?,?,?)
+       ON CONFLICT(employee_id,date) DO UPDATE SET status=excluded.status, check_in=excluded.check_in, check_out=excluded.check_out, notes=excluded.notes, user_id=excluded.user_id`,
+  empId, date, status, ci, co, body.notes || null, user.id);
+  audit(user, 'update', 'attendance', empId, { date, status });
+  return get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, date);
+});
+route('DELETE', '/api/attendance/:id', MGMT, ({ params, user }) => { run('DELETE FROM attendance WHERE id=?', params.id); audit(user, 'delete', 'attendance', Number(params.id)); return { ok: true }; });
+
 // reminders
 route('GET', '/api/reminders/due', FRONT, ({ query }) => {
   const days = num(query.days, num(getSetting('reminder_days_ahead', '30')));
@@ -1387,7 +1470,7 @@ for (const [name, def] of Object.entries(RES)) {
 // HTTP
 // ---------------------------------------------------------------------------
 const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.ico': 'image/x-icon', '.pdf': 'application/pdf',
   '.woff2': 'font/woff2', '.ttf': 'font/ttf',
@@ -1461,6 +1544,13 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 500, { error: 'server_error', message: String(e.message || e) });
       }
     }
+    return;
+  }
+
+  // the Node server always runs the built-in backend, even if firebase-config.js holds a Firebase project
+  if (pathname === '/firebase-config.js' && process.env.GEAR_USE_FIREBASE !== '1') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.end('window.FIREBASE_CONFIG = null; // served by the GEAR Node.js server\n');
     return;
   }
 

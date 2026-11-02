@@ -105,6 +105,16 @@ function init() {
     } catch (_) { /* best effort */ }
   }
 
+  // several service advisors per car: advisor_ids = "id1,id2"; advisor_id keeps the first
+  async function setAdvisors(d) {
+    if (d.advisor_ids === undefined && d.advisor_id === undefined) return;
+    const ids = d.advisor_ids !== undefined ? [...new Set(String(d.advisor_ids || '').split(',').map((x) => x.trim()).filter(Boolean))] : (d.advisor_id ? [String(d.advisor_id)] : []);
+    const e = await emps();
+    d.advisor_ids = ids.join(',') || null;
+    d.advisor_id = ids[0] || null;
+    d.advisor_name = ids.map((id) => (e.find((x) => x.id === id) || {}).name).filter(Boolean).join('، ') || null;
+  }
+
   // ------------------------------------------------------------------ denormalization helpers
   const vehicleInfo = (v) => ({ plate: v.plate || null, vin: v.vin || null, model: v.model || null, series: v.series || null, color: v.color || null, year: v.year || null });
   const custInfo = (c) => ({ customer_name: c.name || null, customer_phone: c.phone || null });
@@ -142,7 +152,7 @@ function init() {
       async afterDelete(id, old) { await F.updateDoc(ref('customers', old.customer_id), { vehicles_count: inc(-1) }).catch(() => {}); await refreshPlates(old.customer_id); },
     },
     employees: {
-      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
+      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
       kw: (r) => [r.name, r.phone], order: ['name', 'asc'], small: true, filters: ['job', 'active'], read: ANY, write: MGMT,
       numeric: ['salary', 'labor_commission', 'parts_commission', 'active'], hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id'] },
       after: () => { cache.emps = null; },
@@ -164,7 +174,7 @@ function init() {
       },
     },
     receptions: {
-      cols: ['vehicle_id', 'customer_id', 'date', 'mileage', 'fuel_level', 'complaints', 'checklist', 'damages', 'belongings', 'warning_lights', 'advisor_id', 'expected_delivery', 'driver_name', 'driver_phone', 'status', 'notes'],
+      cols: ['vehicle_id', 'customer_id', 'date', 'mileage', 'fuel_level', 'complaints', 'checklist', 'damages', 'belongings', 'warning_lights', 'advisor_id', 'advisor_ids', 'expected_delivery', 'driver_name', 'driver_phone', 'status', 'notes'],
       required: ['vehicle_id'], kw: (r) => [r.no, r.customer_name, r.customer_phone, r.plate, r.vin], order: ['date', 'desc'], dateCol: 'date',
       filters: ['status', 'vehicle_id', 'customer_id'], read: ANY, write: FRONT, defaults: { status: 'open' }, numeric: ['mileage'],
       async beforeSave(d, old) {
@@ -172,7 +182,7 @@ function init() {
           const v = await mustRow('vehicles', d.vehicle_id);
           Object.assign(d, vehicleInfo(v), { customer_id: v.customer_id, customer_name: v.customer_name, customer_phone: v.customer_phone });
         }
-        if (d.advisor_id !== undefined) d.advisor_name = await empName(d.advisor_id);
+        await setAdvisors(d);
         if (!old) { d.date = d.date || nowStr(); d.no = await nextNo('receptions', 'RC'); }
       },
       async afterCreate(id, d) { if (num(d.mileage) > 0) await bumpMileage(d.vehicle_id, num(d.mileage)); },
@@ -198,7 +208,7 @@ function init() {
       },
     },
     work_orders: {
-      cols: ['reception_id', 'diagnosis_id', 'vehicle_id', 'customer_id', 'date', 'mileage', 'priority', 'bay', 'advisor_id', 'description', 'qc_checklist', 'qc_by', 'notes'],
+      cols: ['reception_id', 'diagnosis_id', 'vehicle_id', 'customer_id', 'date', 'mileage', 'priority', 'bay', 'advisor_id', 'advisor_ids', 'description', 'qc_checklist', 'qc_by', 'notes'],
       required: ['vehicle_id'], kw: (r) => [r.no, r.customer_name, r.customer_phone, r.plate, r.vin], order: ['date', 'desc'], dateCol: 'date',
       filters: ['status', 'vehicle_id', 'customer_id', 'priority'], read: ANY, write: SHOP, numeric: ['mileage'],
       defaults: { status: 'open', priority: 'normal', active: true, labor: [], parts: [], labor_total: 0, parts_total: 0, technicians: '' },
@@ -207,7 +217,7 @@ function init() {
           const v = await mustRow('vehicles', d.vehicle_id);
           Object.assign(d, vehicleInfo(v), { customer_id: v.customer_id, customer_name: v.customer_name, customer_phone: v.customer_phone });
         }
-        if (d.advisor_id !== undefined) d.advisor_name = await empName(d.advisor_id);
+        await setAdvisors(d);
         if (!old) { d.date = d.date || nowStr(); d.no = await nextNo('work_orders', 'WO'); }
       },
       async afterCreate(id, d) {
@@ -750,8 +760,30 @@ function init() {
       };
     });
   }
+  // ------------------------------------------------------------------ attendance
+  const PAY = window.GEAR_PAY;
+  const ATT_READ = ['admin', 'manager', 'accountant'];
+  const ATT_STATUSES = ['present', 'absent', 'leave', 'sick', 'holiday', 'unpaid'];
+  const hmOf = (ts) => { const d = ts.toDate(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  // self check-ins carry a server timestamp; it wins over the phone's clock
+  const fixAtt = (r) => {
+    if (!r) return r;
+    if (r.check_in_at && r.check_in_at.toDate) r.check_in = hmOf(r.check_in_at);
+    if (r.check_out_at && r.check_out_at.toDate) r.check_out = hmOf(r.check_out_at);
+    delete r.check_in_at; delete r.check_out_at;
+    return r;
+  };
+  const attId = (empId, date) => `${empId}_${date}`;
+  const attOfPeriod = async (period, empId) => (await all('attendance', ...(empId ? [W('employee_id', '==', String(empId))] : []), W('period', '==', period))).map(fixAtt);
+  async function attendanceCalc(e, period, recs) {
+    recs = recs || await attOfPeriod(period, e.id);
+    return PAY.calc(e, recs.filter((r) => r.employee_id === e.id), period, await settings(), today());
+  }
+
   async function payroll(period) {
     const list = (await emps()).filter((e) => Number(e.active)).sort((a, b) => (a.name < b.name ? -1 : 1));
+    await settings();
+    const att = await attOfPeriod(period);
     const unpaid = await all('bonuses', W('paid', '==', 0));
     const sal = await all('transactions', W('category', '==', 'salary'), W('period', '==', period));
     return list.map((e) => {
@@ -759,7 +791,9 @@ function init() {
       const plus = r2(mine.filter((b) => b.type !== 'deduction').reduce((s, b) => s + b.amount, 0));
       const minus = r2(mine.filter((b) => b.type === 'deduction').reduce((s, b) => s + b.amount, 0));
       const paidSal = r2(sal.filter((t) => t.party_id === e.id).reduce((s, t) => s + t.amount, 0));
-      return { employee_id: e.id, name: e.name, job: e.job, salary: num(e.salary), salary_paid: paidSal, bonuses: plus, deductions: minus, net: r2(num(e.salary) - paidSal + plus - minus) };
+      const a = PAY.calc(e, att.filter((r) => r.employee_id === e.id), period, cache.settings || {}, today());
+      delete a.days;
+      return { employee_id: e.id, name: e.name, job: e.job, salary: num(e.salary), ...a, salary_paid: paidSal, bonuses: plus, deductions: minus, net: r2(a.salary_due - paidSal + plus - minus) };
     });
   }
   async function payPayroll(body) {
@@ -768,7 +802,7 @@ function init() {
     const e = await mustRow('employees', employee_id);
     const rowp = (await payroll(period)).find((x) => x.employee_id === String(employee_id));
     if (!rowp) throw bad('not_found');
-    const salaryDue = r2(num(e.salary) - rowp.salary_paid);
+    const salaryDue = r2(rowp.salary_due - rowp.salary_paid);
     if (salaryDue > 0) await addTx({ account_id, direction: 'out', amount: salaryDue, category: 'salary', description: `Salary ${period} - ${e.name}`, party_type: 'employee', party_id: e.id, period });
     const net = r2(rowp.bonuses - rowp.deductions);
     let tid = null;
@@ -872,6 +906,7 @@ function init() {
     center_name_ar: 'مركز صيانة BMW', center_name_en: 'BMW Service Center', center_phone: '', center_address: '', tax_no: '', currency: 'EGP', vat_rate: '14', labor_rate: '600',
     invoice_footer_ar: 'شكراً لثقتكم - ضمان العمالة 30 يوم', invoice_footer_en: 'Thank you for your trust - 30 days labor warranty',
     reminder_days_ahead: '30', reminder_km_ahead: '1000', avg_km_per_month: '1500', allow_negative_stock: '0', logo: '', whatsapp_template_ar: '', whatsapp_template_en: '',
+    work_start: '09:00', work_end: '17:00', work_days_month: '26', weekend_days: '5', late_grace: '15', overtime_rate: '1.5', attendance_payroll: '0', deduct_late: '1',
   };
   const DEFAULT_SERVICES = [
     ['OIL', 'تغيير زيت المحرك والفلتر', 'Engine oil & filter service', 'CBS', 1, 600, 10000, 12], ['BRK-F', 'تغيير فرامل أمامي (تيل + طنابير)', 'Front brake pads & discs', 'Brakes', 1.5, 900, 40000, 0],
@@ -926,7 +961,7 @@ function init() {
       return { id: uid };
     } finally { await F.deleteApp(second).catch(() => {}); }
   }
-  const BACKUP_COLS = ['settings', 'users', 'customers', 'vehicles', 'employees', 'service_types', 'appointments', 'receptions', 'diagnoses', 'work_orders', 'suppliers', 'parts', 'stock_moves', 'purchases', 'invoices', 'accounts', 'transactions', 'bonuses', 'reminders', 'counters'];
+  const BACKUP_COLS = ['settings', 'users', 'attendance', 'customers', 'vehicles', 'employees', 'service_types', 'appointments', 'receptions', 'diagnoses', 'work_orders', 'suppliers', 'parts', 'stock_moves', 'purchases', 'invoices', 'accounts', 'transactions', 'bonuses', 'reminders', 'counters'];
   G.FB = {
     backup: async () => {
       need(['admin']);
@@ -1028,7 +1063,7 @@ function init() {
     if (r.work_order_id && (await getRow('work_orders', r.work_order_id))) return { id: r.work_order_id, existing: true };
     const d = r.diagnosis_id ? await getRow('diagnoses', r.diagnosis_id) : null;
     const desc = [r.complaints, d && d.recommendations].filter(Boolean).join('\n---\n');
-    const wo = await createResource('work_orders', { reception_id: r.id, diagnosis_id: d ? d.id : null, vehicle_id: r.vehicle_id, mileage: r.mileage, advisor_id: r.advisor_id, description: desc, priority: body.priority || 'normal' });
+    const wo = await createResource('work_orders', { reception_id: r.id, diagnosis_id: d ? d.id : null, vehicle_id: r.vehicle_id, mileage: r.mileage, advisor_ids: r.advisor_ids || r.advisor_id || '', description: desc, priority: body.priority || 'normal' });
     return { id: wo.id };
   });
 
@@ -1211,6 +1246,64 @@ function init() {
   });
   route('GET', '/api/payroll', MONEY, ({ query }) => payroll(query.period || today().slice(0, 7)));
   route('POST', '/api/payroll/pay', MONEY, ({ body }) => payPayroll(body));
+  route('GET', '/api/attendance', ATT_READ, async ({ query }) => {
+    const date = query.date || today();
+    const list = (await emps()).filter((e) => Number(e.active)).sort((a, b) => (a.name < b.name ? -1 : 1));
+    const recs = (await all('attendance', W('date', '==', date))).map(fixAtt);
+    const cfg = PAY.config(await settings());
+    const work = !cfg.weekend.includes(PAY.weekday(date));
+    return { date, work_day: work, rows: list.map((e) => { const r = recs.find((x) => x.employee_id === e.id) || null; return { employee_id: e.id, name: e.name, job: e.job, record: r, ...PAY.dayStats(r, cfg, work) }; }) };
+  });
+  route('GET', '/api/attendance/month', ANY, async ({ query }) => {
+    const period = query.period || today().slice(0, 7);
+    const mgr = hasAny(ATT_READ);
+    const empId = mgr ? String(query.employee_id || me.employee_id || '') : String(me.employee_id || '');
+    const e = empId ? await getRow('employees', empId) : null;
+    if (!e) throw new ApiError(404, 'not_found');
+    const res = await attendanceCalc(e, period);
+    if (!mgr) for (const k of ['salary', 'salary_due', 'absence_deduction', 'late_deduction', 'overtime_pay']) delete res[k];
+    return { employee: { id: e.id, name: e.name, job: e.job, pay_type: e.pay_type }, period, ...res };
+  });
+  route('GET', '/api/attendance/me', ANY, async () => {
+    if (!me.employee_id) return { linked: false };
+    const r = await getRow('attendance', attId(me.employee_id, today())).catch(() => null);
+    return { linked: true, date: today(), record: fixAtt(r) };
+  });
+  route('POST', '/api/attendance/punch', ANY, async ({ body }) => {
+    const mgr = hasAny(MGMT);
+    const empId = String(body.employee_id && mgr ? body.employee_id : me.employee_id || '');
+    if (!empId || empId === 'null') throw bad('not_linked_employee');
+    const e = await mustRow('employees', empId);
+    const d = today(); const id = attId(empId, d);
+    const r = await getRow('attendance', id).catch(() => null);
+    const tm = nowStr().slice(11, 16);
+    if (body.action === 'out') {
+      if (!r || !r.check_in) throw bad('not_checked_in');
+      if (r.check_out && !mgr) throw bad('already_checked_out');
+      await F.updateDoc(ref('attendance', id), { check_out: tm, check_out_at: F.serverTimestamp() });
+    } else if (r) {
+      if (r.check_in && !mgr) throw bad('already_checked_in');
+      await F.updateDoc(ref('attendance', id), { status: 'present', check_in: tm, check_in_at: F.serverTimestamp() });
+    } else {
+      await F.setDoc(ref('attendance', id), { employee_id: empId, employee_name: e.name, date: d, period: d.slice(0, 7), status: 'present', check_in: tm, check_in_at: F.serverTimestamp(), created_at: nowStr(), self: !mgr });
+    }
+    await audit('punch:' + (body.action || 'in'), 'attendance', empId);
+    return fixAtt(await getRow('attendance', id));
+  });
+  route('PUT', '/api/attendance', MGMT, async ({ body }) => {
+    const empId = String(body.employee_id || ''); const date = String(body.date || '').slice(0, 10);
+    if (!empId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw bad('required');
+    const e = await mustRow('employees', empId);
+    const status = ATT_STATUSES.includes(body.status) ? body.status : 'present';
+    const hm = (v) => (v && /^\d{1,2}:\d{2}/.test(v) ? String(v).slice(0, 5).padStart(5, '0') : null);
+    const d = { employee_id: empId, employee_name: e.name, date, period: date.slice(0, 7), status, check_in: status === 'present' ? hm(body.check_in) : null,
+      check_out: status === 'present' ? hm(body.check_out) : null, check_in_at: null, check_out_at: null, notes: body.notes || null, updated_by: me.id, created_at: nowStr() };
+    await F.setDoc(ref('attendance', attId(empId, date)), d);
+    await audit('update', 'attendance', empId, { date, status });
+    return { ...d, id: attId(empId, date) };
+  });
+  route('DELETE', '/api/attendance/:id', MGMT, async ({ params }) => { await F.deleteDoc(ref('attendance', params.id)); return { ok: true }; });
+
   route('GET', '/api/reminders/due', FRONT, async ({ query }) => {
     const days = num(query.days, num(await getSetting('reminder_days_ahead', '30')));
     const t = today();
