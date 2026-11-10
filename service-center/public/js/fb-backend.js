@@ -674,6 +674,23 @@ function init() {
     await audit('cancel', 'invoices', id);
   }
 
+  // delete an invoice completely: payments leave the cash accounts, counter-sale parts go back to stock,
+  // a work-order invoice frees its work order
+  async function deleteInvoice(id) {
+    const inv = await mustRow('invoices', id);
+    for (const t of await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))) await removeTx(t);
+    if (inv.status !== 'cancelled') {
+      if (!inv.work_order_id) for (const it of inv.items || []) if (it.part_id) await stockMove(it.part_id, 'return', it.qty, it.unit_cost, 'invoice', id, 'Invoice deleted');
+      await F.updateDoc(ref('customers', inv.customer_id), { balance: inc(-r2(inv.total - inv.paid)) }).catch(() => {});
+    }
+    if (inv.work_order_id) {
+      const w = await getRow('work_orders', inv.work_order_id);
+      if (w && w.invoice_id === id) await F.updateDoc(ref('work_orders', w.id), { invoice_id: null, invoice_no: null, invoice_status: null });
+    }
+    await F.deleteDoc(ref('invoices', id));
+    await audit('delete', 'invoices', id, { no: inv.no, total: inv.total, paid: inv.paid });
+  }
+
   // ------------------------------------------------------------------ purchases
   async function createPurchase(body) {
     if (!body.supplier_id) throw bad('required', { field: 'supplier_id' });
@@ -728,6 +745,13 @@ function init() {
   }
   async function deletePurchase(id) {
     const p = await mustRow('purchases', id);
+    // check stock first so a failure never leaves the purchase half-deleted
+    if (!p.is_return && String(await getSetting('allow_negative_stock', '0')) !== '1') {
+      for (const it of p.items || []) {
+        const part = await getRow('parts', it.part_id);
+        if (part && num(part.qty) < num(it.qty)) throw bad('insufficient_stock', { part: part.name_en, available: part.qty });
+      }
+    }
     for (const it of p.items || []) await stockMove(it.part_id, p.is_return ? 'in' : 'out', it.qty, it.unit_cost, 'purchase_void', id, 'Purchase deleted');
     for (const t of await all('transactions', W('ref_type', '==', 'purchase'), W('ref_id', '==', String(id)))) {
       await removeTx(t);
@@ -1165,6 +1189,7 @@ function init() {
     await audit('discount', 'invoices', inv.id, body);
     return invoiceFull(inv.id);
   });
+  route('DELETE', '/api/invoices/:id', MGMT, async ({ params }) => { await deleteInvoice(params.id); return { ok: true }; });
   route('POST', '/api/invoices/:id/cancel', MGMT, async ({ params }) => { await cancelInvoice(params.id); return invoiceFull(params.id); });
 
   route('POST', '/api/purchases', SUPP, ({ body }) => createPurchase(body));

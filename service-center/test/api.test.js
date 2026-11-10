@@ -241,6 +241,55 @@ test('full service-center flow', async () => {
   cookie = adminCookie;
   assert.equal((await call('GET', '/api/attendance')).rows.find((r) => r.employee_id === mE.id).record.check_in, pout.check_in);
 
+  // ---- delete invoices (customer) and purchases (supplier): everything is reversed
+  const bal = async (id) => (await call('GET', '/api/accounts')).rows.find((x) => x.id === id).balance;
+  const qtyOf = async (id) => (await call('GET', `/api/parts/${id}`)).qty;
+  const delPart = await call('POST', '/api/parts', { part_no: 'DEL-1', name_en: 'Delete test part', qty: 10, cost: 50, price: 100 });
+  // work-order invoice, fully paid -> delete
+  const dWo = await call('POST', '/api/work-orders', { vehicle_id: veh.id, description: 'delete test' });
+  await call('POST', `/api/work-orders/${dWo.id}/parts`, { part_id: delPart.id, qty: 2 });
+  assert.equal(await qtyOf(delPart.id), 8);
+  const cashBefore = await bal(cash.id);
+  const custBefore = (await call('GET', `/api/customers/${cust.id}`)).balance;
+  const dInv = await call('POST', `/api/work-orders/${dWo.id}/invoice`, { tax_rate: 0, payment: { amount: 200, account_id: cash.id } });
+  assert.equal(dInv.status, 'paid');
+  assert.equal(await bal(cash.id), Math.round((cashBefore + 200) * 100) / 100);
+  await call('DELETE', `/api/invoices/${dInv.id}`);
+  await call('GET', `/api/invoices/${dInv.id}`, undefined, { expect: 404 });
+  assert.equal(await bal(cash.id), cashBefore, 'payment removed from cash');
+  assert.equal((await call('GET', `/api/customers/${cust.id}`)).balance, custBefore, 'customer balance restored');
+  assert.equal((await call('GET', `/api/work-orders/${dWo.id}`)).invoice_id, null, 'work order freed');
+  assert.equal(await qtyOf(delPart.id), 8, 'WO parts stay on the work order');
+  await call('POST', `/api/work-orders/${dWo.id}/parts`, { part_id: delPart.id, qty: 1 }); // editable again
+  // counter sale (unpaid) -> delete returns stock
+  const dSale = await call('POST', '/api/invoices', { customer_id: cust.id, tax_rate: 0, items: [{ part_id: delPart.id, qty: 3, unit_price: 100 }] });
+  assert.equal(await qtyOf(delPart.id), 4);
+  await call('DELETE', `/api/invoices/${dSale.id}`);
+  assert.equal(await qtyOf(delPart.id), 7, 'counter-sale parts back in stock');
+  // cancelled invoice -> delete does not return stock twice
+  const cSale = await call('POST', '/api/invoices', { customer_id: cust.id, tax_rate: 0, items: [{ part_id: delPart.id, qty: 1, unit_price: 100 }] });
+  await call('POST', `/api/invoices/${cSale.id}/cancel`, {});
+  await call('DELETE', `/api/invoices/${cSale.id}`);
+  assert.equal(await qtyOf(delPart.id), 7, 'no double return');
+  // supplier invoice with a payment -> delete
+  const supBefore = (await call('GET', `/api/suppliers/${sup.id}`)).balance;
+  const cashB2 = await bal(cash.id);
+  const dPo = await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ part_id: delPart.id, qty: 5, unit_cost: 60 }], payment: { amount: 100, account_id: cash.id } });
+  assert.equal(await qtyOf(delPart.id), 12);
+  await call('DELETE', `/api/purchases/${dPo.id}`);
+  assert.equal(await qtyOf(delPart.id), 7, 'purchased qty removed');
+  assert.equal((await call('GET', `/api/suppliers/${sup.id}`)).balance, supBefore, 'supplier balance restored');
+  assert.equal(await bal(cash.id), cashB2, 'supplier payment back in cash');
+  // cannot delete a purchase whose parts were already used
+  const usedPo = await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ part_id: delPart.id, qty: 1, unit_cost: 60 }] });
+  await call('POST', '/api/stock/adjust', { part_id: delPart.id, type: 'out', qty: 8 });
+  await call('DELETE', `/api/purchases/${usedPo.id}`, undefined, { expect: 400 });
+  assert.ok(await call('GET', `/api/purchases/${usedPo.id}/full`), 'purchase kept when stock is missing');
+  // only managers can delete
+  await call('POST', '/api/auth/login', { username: 'acc1', password: 'secret1' });
+  await call('DELETE', `/api/purchases/${usedPo.id}`, undefined, { expect: 403 });
+  cookie = adminCookie;
+
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   const att = await call('POST', '/api/attachments', { ref_type: 'reception', ref_id: rec.id, mime: 'image/png', data: png });

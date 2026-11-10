@@ -190,6 +190,12 @@ window.I18N = {
   weekend_days: ['أيام الإجازة الأسبوعية', 'Weekly days off'],
   err_not_linked_employee: ['حسابك مش مربوط بموظف - المدير يربطه من المستخدمين والصلاحيات', 'Your account is not linked to an employee'],
   err_not_checked_in: ['لازم تسجل حضور الأول', 'Check in first'], err_already_checked_in: ['تم تسجيل الحضور بالفعل', 'Already checked in'], err_already_checked_out: ['تم تسجيل الانصراف بالفعل', 'Already checked out'],
+  delete_invoice: ['حذف الفاتورة', 'Delete invoice'],
+  delete_invoice_warn: ['هتتمسح نهائياً: قطع البيع المباشر هترجع للمخزن، وأمر الشغل يرجع مفتوح للتعديل والفوترة من جديد.', 'This is permanent: counter-sale parts return to stock and the work order is reopened for editing and invoicing.'],
+  delete_invoice_paid: ['المبلغ ده هيتشال من الخزنة', 'this amount will be removed from the cash accounts'],
+  delete_purchase_warn: ['هتتمسح نهائياً: الكميات هتتخصم من المخزن ورصيد المورد هيتعدل.', 'This is permanent: quantities are removed from stock and the supplier balance is adjusted.'],
+  delete_purchase_return_warn: ['هتتمسح نهائياً: الكميات المرتجعة هترجع للمخزن ورصيد المورد هيتعدل.', 'This is permanent: returned quantities go back to stock and the supplier balance is adjusted.'],
+  delete_purchase_paid: ['المدفوع للمورد هيرجع للخزنة', 'payments to the supplier go back to the cash accounts'],
   // errors
   err_unauthorized: ['برجاء تسجيل الدخول', 'Please sign in'], err_forbidden: ['ليس لديك صلاحية', 'You do not have permission'], err_not_found: ['غير موجود', 'Not found'],
   err_invalid_credentials: ['اسم المستخدم أو كلمة المرور غير صحيحة', 'Invalid username or password'], err_too_many_attempts: ['محاولات كثيرة، حاول لاحقاً', 'Too many attempts, try later'],

@@ -734,6 +734,26 @@ function cancelInvoice(id, user) {
   });
 }
 
+// Delete an invoice completely: its payments leave the cash accounts, parts of a counter sale go back
+// to stock, and a work-order invoice frees the work order so it can be edited and invoiced again.
+function deleteInvoice(id, user) {
+  const inv = get('SELECT * FROM invoices WHERE id=?', id);
+  if (!inv) throw new HttpError(404, 'not_found');
+  tx(() => {
+    run("DELETE FROM transactions WHERE ref_type='invoice' AND ref_id=?", id);
+    if (inv.status !== 'cancelled') {
+      if (!inv.work_order_id) {
+        for (const it of all('SELECT * FROM invoice_items WHERE invoice_id=? AND part_id IS NOT NULL', id)) {
+          stockMove(it.part_id, 'return', it.qty, it.unit_cost, 'invoice', id, 'Invoice deleted', user);
+        }
+      }
+    }
+    if (inv.work_order_id) run('UPDATE work_orders SET invoice_id=NULL WHERE id=? AND invoice_id=?', inv.work_order_id, id);
+    run('DELETE FROM invoices WHERE id=?', id);
+    audit(user, 'delete', 'invoices', id, { no: inv.no, total: inv.total, paid: inv.paid });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Purchases
 // ---------------------------------------------------------------------------
@@ -1253,6 +1273,7 @@ route('POST', '/api/invoices/:id/discount', MGMT, ({ params, body, user }) => {
   audit(user, 'discount', 'invoices', inv.id, body);
   return invoiceFull(inv.id, user);
 });
+route('DELETE', '/api/invoices/:id', MGMT, ({ params, user }) => { deleteInvoice(Number(params.id), user); return { ok: true }; });
 route('POST', '/api/invoices/:id/cancel', MGMT, ({ params, user }) => { cancelInvoice(Number(params.id), user); return invoiceFull(params.id, user); });
 
 // purchases

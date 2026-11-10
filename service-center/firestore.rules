@@ -47,7 +47,7 @@ service cloud.firestore {
     // purchasing & money
     match /suppliers/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
     match /purchases/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
-    match /invoices/{id} { allow read, create, update: if hasRole(BILL()); }
+    match /invoices/{id} { allow read, create, update: if hasRole(BILL()); allow delete: if hasRole(MGMT()); }
     match /accounts/{id} {
       allow read: if hasRole(BILL());
       allow create, delete: if hasRole(MGMT());

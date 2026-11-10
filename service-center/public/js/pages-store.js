@@ -109,8 +109,16 @@
     filters: [{ name: 'status', type: 'select', options: [['unpaid', t('unpaid')], ['partial', t('partial')], ['paid', t('paid_full')]] }, { name: 'from', type: 'date' }, { name: 'to', type: 'date' }],
     rowLink: (r) => `#/purchases/${r.id}`,
     columns: [{ key: 'no', render: (r) => `<b>${esc(r.no)}</b> ${r.is_return ? G.badge('purchase_return') : ''}` }, { key: 'date' }, { key: 'supplier_name', label: t('supplier') }, { key: 'supplier_invoice_no', hideMobile: true },
-      { key: 'total', cls: 'num', render: (r) => G.money(r.total) }, { key: 'paid', cls: 'num', render: (r) => G.money(r.paid) }, { key: 'status', render: (r) => G.badge(r.status, r.status === 'paid' ? 'paid_' : '') }],
+      { key: 'total', cls: 'num', render: (r) => G.money(r.total) }, { key: 'paid', cls: 'num', render: (r) => G.money(r.paid) }, { key: 'status', render: (r) => G.badge(r.status, r.status === 'paid' ? 'paid_' : '') },
+      ...(G.can(R.MGMT) ? [{ key: 'a', label: '', cls: 'actions-col', render: () => `<button class="icon-btn danger" data-delpo title="${t('delete')}">🗑</button>` }] : [])],
+    bind: (el, rows, reload) => el.querySelectorAll('[data-delpo]').forEach((b) => b.onclick = () => G.deletePurchase(rows[b.closest('tr').dataset.i], reload)),
   }), R.SUPP);
+  G.deletePurchase = async (p, after) => {
+    const lines = [`${t('delete')} ${p.no}?`, p.is_return ? t('delete_purchase_return_warn') : t('delete_purchase_warn')];
+    if (Number(p.paid) > 0) lines.push(`${t('paid')}: ${G.money(p.paid)} ← ${t('delete_purchase_paid')}`);
+    if (!(await G.confirm(lines.join('\n')))) return;
+    try { await G.del(`/api/purchases/${p.id}`); G.toast(t('deleted')); after(); } catch (e) { G.fail(e); }
+  };
 
   G.addRoute('/purchases/new', async (view, p, q) => {
     const isReturn = q.return === '1';
@@ -210,6 +218,6 @@
       });
     };
     const db = view.querySelector('[data-del]');
-    if (db) db.onclick = async () => { if (!(await G.confirm(t('confirm_delete')))) return; try { await G.del(`/api/purchases/${d.id}`); G.toast(t('deleted')); location.hash = '#/purchases'; } catch (e) { G.fail(e); } };
+    if (db) db.onclick = () => G.deletePurchase(d, () => { location.hash = '#/purchases'; });
   }, R.SUPP);
 })();

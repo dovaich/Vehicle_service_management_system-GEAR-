@@ -8,6 +8,13 @@
   const both = (k) => `${window.I18N[k] ? window.I18N[k][0] + ' / ' + window.I18N[k][1] : k}`;
 
   // ---------------- invoices ----------------
+  // permanent delete with a clear warning about what is reversed
+  G.deleteInvoice = async (inv, after) => {
+    const lines = [`${t('delete_invoice')} ${inv.no}?`, t('delete_invoice_warn')];
+    if (Number(inv.paid) > 0) lines.push(`${t('paid')}: ${G.money(inv.paid)} ← ${t('delete_invoice_paid')}`);
+    if (!(await G.confirm(lines.join('\n')))) return;
+    try { await G.del(`/api/invoices/${inv.id}`); G.toast(t('deleted')); after(); } catch (e) { G.fail(e); }
+  };
   G.addRoute('/invoices', (view, p, q) => G.listPage(view, {
     title: t('invoices'), res: 'invoices', canWrite: G.can(R.BILL), csvName: 'invoices',
     defaultQuery: { unpaid: q.unpaid || '' },
@@ -22,7 +29,9 @@
       { key: 'total', cls: 'num', render: (r) => G.money(r.total) }, { key: 'paid', cls: 'num', hideMobile: true, render: (r) => G.money(r.paid) },
       { key: 'due', cls: 'num', render: (r) => (r.status !== 'cancelled' && r.due > 0 ? `<b class="neg">${G.money(r.due)}</b>` : '-') },
       { key: 'status', render: (r) => invStatus(r.status) },
+      ...(G.can(R.MGMT) ? [{ key: 'a', label: '', cls: 'actions-col', render: () => `<button class="icon-btn danger" data-delinv title="${t('delete_invoice')}">🗑</button>` }] : []),
     ],
+    bind: (el, rows, reload) => el.querySelectorAll('[data-delinv]').forEach((b) => b.onclick = () => G.deleteInvoice(rows[b.closest('tr').dataset.i], reload)),
     foot: (rows) => `<tr><td colspan="5" class="hide-m"></td><td class="num" data-label="${t('total')}"><b>${G.money(rows.filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.total, 0))}</b></td><td class="hide-m"></td><td class="num" data-label="${t('due')}"><b>${G.money(rows.filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.due, 0))}</b></td><td></td></tr>`,
   }), R.BILL);
 
@@ -127,7 +136,8 @@
           ${inv.status !== 'cancelled' && due > 0 && G.can(R.MONEY.concat(['advisor'])) ? `<button class="btn btn-primary" data-pay>💵 ${t('add_payment')}</button>` : ''}
           ${inv.status !== 'cancelled' && G.can(R.MGMT) ? `<button class="btn" data-disc>％ ${t('edit_discount')}</button>` : ''}
           ${inv.status !== 'cancelled' && inv.paid > 0 && G.can(R.MONEY) ? `<button class="btn" data-refund>↩ ${t('refund')}</button>` : ''}
-          ${inv.status !== 'cancelled' && inv.paid <= 0 && G.can(R.MGMT) ? `<button class="btn btn-danger" data-cancel>✖ ${t('cancel_invoice')}</button>` : ''}
+          ${inv.status !== 'cancelled' && inv.paid <= 0 && G.can(R.MGMT) ? `<button class="btn" data-cancel>✖ ${t('cancel_invoice')}</button>` : ''}
+          ${G.can(R.MGMT) ? `<button class="btn btn-danger" data-delinv>🗑 ${t('delete_invoice')}</button>` : ''}
         </div></div>
         <div class="card info-grid">
           ${G.info(t('customer'), `<a href="#/customers/${inv.customer_id}">${esc(inv.customer.name)}</a>`, true)}${G.info(t('phone'), inv.customer.phone)}
@@ -165,6 +175,8 @@
         title: t('edit_discount'), fields: [{ name: 'discount', type: 'number' }, { name: 'tax_rate', type: 'number' }], values: inv,
         onSubmit: async (d, close) => { inv = await G.post(`/api/invoices/${inv.id}/discount`, d); close(); render(); },
       });
+      const di = view.querySelector('[data-delinv]');
+      if (di) di.onclick = () => G.deleteInvoice(inv, () => { location.hash = '#/invoices'; });
       const cb = view.querySelector('[data-cancel]');
       if (cb) cb.onclick = async () => { if (!(await G.confirm(t('cancel_invoice') + '?'))) return; try { inv = await G.post(`/api/invoices/${inv.id}/cancel`); render(); } catch (e) { G.fail(e); } };
     };
