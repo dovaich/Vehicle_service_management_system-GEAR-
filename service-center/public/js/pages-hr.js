@@ -64,7 +64,7 @@
       const present = d.rows.filter((r) => r.record && r.record.status === 'present').length;
       body.querySelector('[data-out]').innerHTML = `<div class="count-line">${G.WEEKDAYS()[new Date(date + 'T12:00:00').getDay()]} ${d.work_day ? '' : '· ' + t('day_off')} · ${t('at_present')}: <b>${present}</b> / ${d.rows.length}</div>`
         + G.table([
-          { key: 'name', label: t('employee'), render: (r) => `<b>${esc(r.name)}</b><br><small class="muted">${t('j_' + r.job)}</small>` },
+          { key: 'name', label: t('employee'), render: (r) => `<b>${esc(r.name)}</b><br><small class="muted">${t('j_' + r.job)} · ${esc(r.schedule || '')}${r.work_day === false ? ' · ' + t('day_off') : ''}${r.by_attendance === false ? ' · ' + t('att_short_no') : ''}</small>` },
           { key: 'status', render: (r) => stBadge(r.record && r.record.status) },
           { key: 'check_in', label: t('check_in'), render: (r) => esc((r.record && r.record.check_in) || '-') },
           { key: 'check_out', label: t('check_out'), render: (r) => esc((r.record && r.record.check_out) || '-') },

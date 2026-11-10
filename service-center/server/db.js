@@ -390,6 +390,10 @@ db.exec(SCHEMA);
 if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name='extra_roles'").get()) db.exec('ALTER TABLE users ADD COLUMN extra_roles TEXT');
 if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_type'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_type TEXT DEFAULT 'monthly'");
 if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_cycle'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_cycle TEXT DEFAULT 'monthly'");
+// per-employee choice: salary by attendance or full, and the employee's own schedule (empty = general settings)
+for (const c of ['attendance_based', 'work_start', 'work_end', 'weekend_days']) {
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('employees') WHERE name='${c}'`).get()) db.exec(`ALTER TABLE employees ADD COLUMN ${c} TEXT`);
+}
 // payroll payments: the pay period and the part of the payment that was salary (the rest is bonus/deductions/advances)
 if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='period'").get()) db.exec('ALTER TABLE transactions ADD COLUMN period TEXT');
 if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='salary_part'").get()) db.exec('ALTER TABLE transactions ADD COLUMN salary_part REAL');

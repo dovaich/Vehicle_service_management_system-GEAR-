@@ -152,7 +152,7 @@ function init() {
       async afterDelete(id, old) { await F.updateDoc(ref('customers', old.customer_id), { vehicles_count: inc(-1) }).catch(() => {}); await refreshPlates(old.customer_id); },
     },
     employees: {
-      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
+      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'attendance_based', 'work_start', 'work_end', 'weekend_days', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
       kw: (r) => [r.name, r.phone], order: ['name', 'asc'], small: true, filters: ['job', 'active'], read: ANY, write: MGMT,
       numeric: ['salary', 'labor_commission', 'parts_commission', 'active'], hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id'] },
       after: () => { cache.emps = null; },
@@ -742,6 +742,52 @@ function init() {
     const paid = r2(p.paid + amount);
     await F.updateDoc(ref('purchases', id), { paid, status: paid <= 0 ? 'unpaid' : paid + 0.009 >= p.total ? 'paid' : 'partial' });
   }
+  // edit a supplier invoice: stock and average cost follow the difference, supplier balance the new total
+  async function editPurchase(id, body) {
+    const p = await mustRow('purchases', id);
+    const src = (Array.isArray(body.items) ? body.items : []).filter((i) => i.part_id && num(i.qty) > 0);
+    if (!src.length) throw bad('purchase_empty');
+    const sign = p.is_return ? -1 : 1;
+    const allowNeg = String(await getSetting('allow_negative_stock', '0')) === '1';
+    const items = [];
+    for (const it of src) {
+      const part = await mustRow('parts', it.part_id);
+      items.push({ part_id: part.id, part_no: part.part_no || null, name_en: part.name_en, name_ar: part.name_ar || null, qty: num(it.qty), unit_cost: r2(it.unit_cost), amount: r2(num(it.qty) * num(it.unit_cost)), price: num(it.price) });
+    }
+    const old = p.items || [];
+    const sumBy = (rows, pid, f) => rows.filter((r) => String(r.part_id) === String(pid)).reduce((s, r) => s + f(r), 0);
+    const pids = [...new Set([...old, ...items].map((r) => String(r.part_id)))];
+    // check stock first so a failure never leaves the invoice half-edited
+    const plan = [];
+    for (const pid of pids) {
+      const part = await mustRow('parts', pid);
+      const oq = sumBy(old, pid, (r) => num(r.qty)); const nq = sumBy(items, pid, (r) => num(r.qty));
+      const ov = sumBy(old, pid, (r) => num(r.qty) * num(r.unit_cost)); const nv = sumBy(items, pid, (r) => num(r.qty) * num(r.unit_cost));
+      const dq = r2(sign * (nq - oq));
+      const newQty = r2(num(part.qty) + dq);
+      if (newQty < 0 && !allowNeg) throw bad('insufficient_stock', { part: part.name_en, available: part.qty });
+      let cost = num(part.cost);
+      if (!p.is_return && (dq || Math.abs(ov - nv) > 0.001)) cost = newQty > 0 ? r2(Math.max(0, (num(part.qty) * num(part.cost) - ov + nv) / newQty)) : (nq > 0 ? r2(nv / nq) : cost);
+      const it = items.find((r) => String(r.part_id) === pid);
+      plan.push({ part, dq, newQty, cost, price: !p.is_return && it && it.price > 0 ? r2(it.price) : null });
+    }
+    const subtotal = r2(items.reduce((a, i) => a + i.amount, 0));
+    const discount = r2(body.discount ?? p.discount); const tax = r2(body.tax ?? p.tax);
+    const total = r2(subtotal - discount + tax);
+    const b = F.writeBatch(db);
+    for (const x of plan) {
+      b.update(ref('parts', x.part.id), { qty: x.newQty, cost: x.cost, low: x.newQty <= num(x.part.min_qty), ...(x.price ? { price: x.price } : {}) });
+      if (x.dq) b.set(newRef('stock_moves'), { part_id: x.part.id, part_no: x.part.part_no || null, name_en: x.part.name_en || null, name_ar: x.part.name_ar || null, date: nowStr(), type: 'adjust', qty: x.dq, unit_cost: x.cost, ref_type: 'purchase_edit', ref_id: id, notes: `Edited ${p.no}`, user_id: me.id, user_name: me.name, kw: keywords(x.part.part_no, x.part.name_en, x.part.name_ar, 'purchase_edit') });
+    }
+    const status = p.paid <= 0 ? 'unpaid' : p.paid + 0.009 >= total ? 'paid' : 'partial';
+    const upd = { items, subtotal, discount, tax, total, status, supplier_invoice_no: body.supplier_invoice_no !== undefined ? body.supplier_invoice_no || null : p.supplier_invoice_no || null, date: body.date || p.date, notes: body.notes !== undefined ? body.notes || null : p.notes || null };
+    upd.kw = keywords(p.no, upd.supplier_invoice_no, p.supplier_name);
+    b.update(ref('purchases', id), upd);
+    b.update(ref('suppliers', p.supplier_id), { balance: inc(r2(sign * (total - p.total))) });
+    await b.commit();
+    await audit('edit', 'purchases', id, { old_total: p.total, total });
+    return purchaseFull(id);
+  }
   async function purchaseFull(id) {
     const p = await mustRow('purchases', id);
     delete p.kw;
@@ -1228,6 +1274,7 @@ function init() {
   route('POST', '/api/purchases', SUPP, ({ body }) => createPurchase(body));
   route('GET', '/api/purchases/:id/full', SUPP, ({ params }) => purchaseFull(params.id));
   route('POST', '/api/purchases/:id/payments', MONEY, async ({ params, body }) => { await addPurchasePayment(params.id, body); return purchaseFull(params.id); });
+  route('PUT', '/api/purchases/:id', MONEY, ({ params, body }) => editPurchase(params.id, body));
   route('DELETE', '/api/purchases/:id', MGMT, async ({ params }) => { await deletePurchase(params.id); return { ok: true }; });
   route('GET', '/api/suppliers/:id/statement', SUPP, async ({ params }) => {
     const s = await getResource('suppliers', params.id);
@@ -1309,9 +1356,17 @@ function init() {
     const date = query.date || today();
     const list = (await emps()).filter((e) => Number(e.active)).sort((a, b) => (a.name < b.name ? -1 : 1));
     const recs = (await all('attendance', W('date', '==', date))).map(fixAtt);
-    const cfg = PAY.config(await settings());
-    const work = !cfg.weekend.includes(PAY.weekday(date));
-    return { date, work_day: work, rows: list.map((e) => { const r = recs.find((x) => x.employee_id === e.id) || null; return { employee_id: e.id, name: e.name, job: e.job, record: r, ...PAY.dayStats(r, cfg, work) }; }) };
+    const st = await settings();
+    const work = !PAY.config(st).weekend.includes(PAY.weekday(date));
+    return {
+      date, work_day: work,
+      rows: list.map((e) => {
+        const r = recs.find((x) => x.employee_id === e.id) || null;
+        const cfg = PAY.empConfig(e, st); // the employee's own schedule
+        const wd = !cfg.weekend.includes(PAY.weekday(date));
+        return { employee_id: e.id, name: e.name, job: e.job, record: r, work_day: wd, schedule: `${e.work_start || st.work_start || '09:00'}-${e.work_end || st.work_end || '17:00'}`, by_attendance: cfg.byAttendance, ...PAY.dayStats(r, cfg, wd) };
+      }),
+    };
   });
   route('GET', '/api/attendance/month', ANY, async ({ query }) => {
     const period = query.period || today().slice(0, 7);

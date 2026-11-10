@@ -350,6 +350,49 @@ test('full service-center flow', async () => {
   await call('DELETE', `/api/purchases/${usedPo.id}`, undefined, { expect: 403 });
   cookie = adminCookie;
 
+  // ---- edit a supplier invoice + return items from it
+  const ep = await call('POST', '/api/parts', { part_no: 'EDIT-1', name_en: 'Edit test part', qty: 0, cost: 0, price: 100 });
+  const epo = await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ part_id: ep.id, qty: 10, unit_cost: 50 }] });
+  const supB0 = (await call('GET', `/api/suppliers/${sup.id}`)).balance;
+  let epPart = await call('GET', `/api/parts/${ep.id}`);
+  assert.equal(epPart.qty, 10); assert.equal(epPart.cost, 50);
+  // wrong price and quantity -> fix to 12 pcs at 60
+  const edited = await call('PUT', `/api/purchases/${epo.id}`, { items: [{ part_id: ep.id, qty: 12, unit_cost: 60, price: 130 }] });
+  assert.equal(edited.total, 720);
+  epPart = await call('GET', `/api/parts/${ep.id}`);
+  assert.equal(epPart.qty, 12); assert.equal(epPart.cost, 60, 'average cost corrected'); assert.equal(epPart.price, 130);
+  assert.equal((await call('GET', `/api/suppliers/${sup.id}`)).balance, Math.round((supB0 + 220) * 100) / 100, 'supplier owed the new total');
+  // return 5 of them
+  const ret = await call('POST', '/api/purchases', { supplier_id: sup.id, is_return: 1, notes: `Return ${epo.no}`, items: [{ part_id: ep.id, qty: 5, unit_cost: 60 }] });
+  assert.match(ret.no, /^PR-/);
+  assert.equal((await call('GET', `/api/parts/${ep.id}`)).qty, 7);
+  assert.equal((await call('GET', `/api/suppliers/${sup.id}`)).balance, Math.round((supB0 + 220 - 300) * 100) / 100);
+  // edit the return: only 3 went back
+  await call('PUT', `/api/purchases/${ret.id}`, { items: [{ part_id: ep.id, qty: 3, unit_cost: 60 }] });
+  assert.equal((await call('GET', `/api/parts/${ep.id}`)).qty, 9);
+  assert.equal((await call('GET', `/api/suppliers/${sup.id}`)).balance, Math.round((supB0 + 220 - 180) * 100) / 100);
+  // cannot edit below what was already used
+  await call('POST', '/api/stock/adjust', { part_id: ep.id, type: 'out', qty: 9 });
+  await call('PUT', `/api/purchases/${epo.id}`, { items: [{ part_id: ep.id, qty: 2, unit_cost: 60 }] }, { expect: 400 });
+  assert.equal((await call('GET', `/api/purchases/${epo.id}/full`)).total, 720, 'unchanged after refusal');
+
+  // ---- per-employee choice: by attendance or full salary, own schedule
+  await call('PUT', '/api/settings', { attendance_payroll: '0', work_start: '09:00', work_end: '17:00', weekend_days: '5', late_grace: '15', overtime_rate: '1.5', deduct_late: '1' });
+  const byAtt = await call('POST', '/api/employees', { name: 'Shift Guy', job: 'technician', pay_type: 'weekly', salary: 1200, attendance_based: '1', work_start: '10:00', work_end: '18:00' });
+  const full = await call('POST', '/api/employees', { name: 'Full Guy', job: 'technician', pay_type: 'weekly', salary: 1200, attendance_based: '0' });
+  for (const e of [byAtt, full]) {
+    for (const d of ['2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08']) await call('PUT', '/api/attendance', { employee_id: e.id, date: d, status: 'present', check_in: '10:00', check_out: '18:00' });
+  }
+  await call('PUT', '/api/attendance', { employee_id: byAtt.id, date: '2026-10-03', status: 'present', check_in: '10:30', check_out: '20:00' }); // 30 late, 2h overtime on his own schedule
+  const wk2 = await call('GET', '/api/payroll?period=W2026-10-03');
+  const rA = wk2.find((x) => x.employee_id === byAtt.id); const rF = wk2.find((x) => x.employee_id === full.id);
+  assert.equal(rA.late_minutes, 30); assert.equal(rA.overtime_minutes, 120);
+  assert.equal(rA.salary_due, 1262.5, '1200 - 12.5 late + 75 overtime');
+  assert.equal(rF.salary_due, 1200, 'full salary regardless of times');
+  const board = await call('GET', '/api/attendance?date=2026-10-03');
+  assert.equal(board.rows.find((x) => x.employee_id === byAtt.id).schedule, '10:00-18:00');
+  assert.equal(board.rows.find((x) => x.employee_id === byAtt.id).late, 30);
+
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   const att = await call('POST', '/api/attachments', { ref_type: 'reception', ref_id: rec.id, mime: 'image/png', data: png });

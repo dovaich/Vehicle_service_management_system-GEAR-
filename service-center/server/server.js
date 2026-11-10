@@ -110,7 +110,7 @@ const RES = {
   },
   employees: {
     table: 'employees',
-    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
+    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'attendance_based', 'work_start', 'work_end', 'weekend_days', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
     required: ['name'],
     select: 'SELECT e.* FROM employees e',
     alias: 'e',
@@ -791,6 +791,54 @@ function createPurchase(body, user) {
     return purchaseFull(id);
   });
 }
+// Edit a supplier invoice (quantities, costs, prices, discount, tax). Stock and the parts' average cost
+// follow the difference between the old and the new lines; the supplier balance follows the new total.
+function editPurchase(id, body, user) {
+  const p = get('SELECT * FROM purchases WHERE id=?', id);
+  if (!p) throw new HttpError(404, 'not_found');
+  const items = (Array.isArray(body.items) ? body.items : []).filter((i) => i.part_id && num(i.qty) > 0);
+  if (!items.length) throw bad('purchase_empty');
+  const sign = p.is_return ? -1 : 1; // a purchase adds stock, a return takes it out
+  const allowNeg = getSetting('allow_negative_stock', '0') === '1';
+  return tx(() => {
+    const old = all('SELECT * FROM purchase_items WHERE purchase_id=?', id);
+    const sumBy = (rows, pid, f) => rows.filter((r) => String(r.part_id) === String(pid)).reduce((s, r) => s + f(r), 0);
+    const pids = [...new Set([...old, ...items].map((r) => String(r.part_id)))];
+    for (const pid of pids) {
+      const part = get('SELECT * FROM parts WHERE id=?', pid);
+      if (!part) throw bad('part_not_found');
+      const oq = sumBy(old, pid, (r) => num(r.qty)); const nq = sumBy(items, pid, (r) => num(r.qty));
+      const ov = sumBy(old, pid, (r) => num(r.qty) * num(r.unit_cost)); const nv = sumBy(items, pid, (r) => num(r.qty) * num(r.unit_cost));
+      const dq = r2(sign * (nq - oq));
+      const newQty = r2(num(part.qty) + dq);
+      if (newQty < 0 && !allowNeg) throw bad('insufficient_stock', { part: part.name_en, available: part.qty });
+      let cost = num(part.cost);
+      if (!p.is_return && (dq || Math.abs(ov - nv) > 0.001)) {
+        // take the old purchase value out of the average and put the new one in
+        cost = newQty > 0 ? r2(Math.max(0, (num(part.qty) * num(part.cost) - ov + nv) / newQty)) : (nq > 0 ? r2(nv / nq) : cost);
+      }
+      run('UPDATE parts SET qty=?, cost=? WHERE id=?', newQty, cost, pid);
+      if (dq) run('INSERT INTO stock_moves(part_id,type,qty,unit_cost,ref_type,ref_id,notes,user_id) VALUES(?,?,?,?,?,?,?,?)', pid, 'adjust', dq, cost, 'purchase_edit', id, `Edited ${p.no}`, user.id);
+      const it = items.find((r) => String(r.part_id) === pid);
+      if (!p.is_return && it && num(it.price) > 0) run('UPDATE parts SET price=? WHERE id=?', r2(it.price), pid);
+    }
+    run('DELETE FROM purchase_items WHERE purchase_id=?', id);
+    let subtotal = 0;
+    for (const it of items) {
+      const amount = r2(num(it.qty) * num(it.unit_cost));
+      subtotal += amount;
+      run('INSERT INTO purchase_items(purchase_id,part_id,description,qty,unit_cost,amount) VALUES(?,?,?,?,?,?)', id, it.part_id, it.description || null, num(it.qty), r2(it.unit_cost), amount);
+    }
+    const discount = r2(body.discount ?? p.discount); const tax = r2(body.tax ?? p.tax);
+    const total = r2(subtotal - discount + tax);
+    run('UPDATE purchases SET supplier_invoice_no=?, date=?, notes=?, discount=?, tax=?, subtotal=?, total=? WHERE id=?',
+      body.supplier_invoice_no !== undefined ? body.supplier_invoice_no || null : p.supplier_invoice_no, body.date || p.date,
+      body.notes !== undefined ? body.notes || null : p.notes, discount, tax, r2(subtotal), total, id);
+    recalcPurchase(id);
+    audit(user, 'edit', 'purchases', id, { old_total: p.total, total });
+    return purchaseFull(id);
+  });
+}
 function recalcPurchase(id) {
   const p = get('SELECT * FROM purchases WHERE id=?', id);
   const paid = r2(get("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE ref_type='purchase' AND ref_id=?", id).s);
@@ -812,7 +860,7 @@ function addPurchasePayment(id, pay, user) {
 function purchaseFull(id) {
   const p = get('SELECT p.*, s.name AS supplier_name FROM purchases p LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.id=?', id);
   if (!p) throw new HttpError(404, 'not_found');
-  p.items = all('SELECT pi.*, pa.part_no, pa.name_en, pa.name_ar FROM purchase_items pi LEFT JOIN parts pa ON pa.id=pi.part_id WHERE purchase_id=?', id);
+  p.items = all('SELECT pi.*, pa.part_no, pa.name_en, pa.name_ar, pa.price AS part_price FROM purchase_items pi LEFT JOIN parts pa ON pa.id=pi.part_id WHERE purchase_id=?', id);
   p.payments = all("SELECT t.*, a.name AS account_name FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE ref_type='purchase' AND ref_id=?", id);
   return p;
 }
@@ -872,7 +920,7 @@ function attendanceCalc(e, period) {
 // period: "YYYY-MM" (monthly payroll) or "WYYYY-MM-DD" (weekly payroll, week start)
 function payroll(period) {
   const cycle = PAY.isWeek(period) ? 'weekly' : 'monthly';
-  const emps = all('SELECT id, name, job, salary, pay_type, pay_cycle, hire_date FROM employees WHERE active=1 ORDER BY name').filter((e) => PAY.cycleOf(e) === cycle);
+  const emps = all('SELECT * FROM employees WHERE active=1 ORDER BY name').filter((e) => PAY.cycleOf(e) === cycle);
   return emps.map((e) => {
     const a = attendanceCalc(e, period);
     const b = get(`SELECT COALESCE(SUM(CASE WHEN type IN ('bonus','commission') THEN amount ELSE 0 END),0) AS plus,
@@ -1305,6 +1353,7 @@ route('POST', '/api/invoices/:id/cancel', MGMT, ({ params, user }) => { cancelIn
 route('POST', '/api/purchases', ['admin', 'manager', 'accountant', 'storekeeper'], ({ body, user }) => createPurchase(body, user));
 route('GET', '/api/purchases/:id/full', ['admin', 'manager', 'accountant', 'storekeeper'], ({ params }) => purchaseFull(params.id));
 route('POST', '/api/purchases/:id/payments', MONEY, ({ params, body, user }) => { tx(() => addPurchasePayment(Number(params.id), body, user)); return purchaseFull(params.id); });
+route('PUT', '/api/purchases/:id', MONEY, ({ params, body, user }) => editPurchase(Number(params.id), body, user));
 route('DELETE', '/api/purchases/:id', MGMT, ({ params, user }) => { deletePurchase(Number(params.id), user); return { ok: true }; });
 route('GET', '/api/suppliers/:id/statement', ['admin', 'manager', 'accountant', 'storekeeper'], ({ params, user }) => {
   const s = getResource(RES.suppliers, params.id, user);
@@ -1397,20 +1446,25 @@ route('POST', '/api/payroll/pay', MONEY, ({ body, user }) => payPayroll(body, us
 const ATT_READ = ['admin', 'manager', 'accountant'];
 route('GET', '/api/attendance', ATT_READ, ({ query }) => {
   const date = query.date || today();
-  const emps = all('SELECT id, name, job FROM employees WHERE active=1 ORDER BY name');
+  const emps = all('SELECT * FROM employees WHERE active=1 ORDER BY name');
   const recs = all('SELECT * FROM attendance WHERE date=?', date);
-  const cfg = PAY.config(D.allSettings());
-  const work = !cfg.weekend.includes(PAY.weekday(date));
+  const settings = D.allSettings();
+  const work = !PAY.config(settings).weekend.includes(PAY.weekday(date));
   return {
     date, work_day: work,
-    rows: emps.map((e) => { const r = recs.find((x) => x.employee_id === e.id); return { employee_id: e.id, name: e.name, job: e.job, record: r || null, ...PAY.dayStats(r, cfg, work) }; }),
+    rows: emps.map((e) => {
+      const r = recs.find((x) => x.employee_id === e.id);
+      const cfg = PAY.empConfig(e, settings); // the employee's own schedule
+      const wd = !cfg.weekend.includes(PAY.weekday(date));
+      return { employee_id: e.id, name: e.name, job: e.job, record: r || null, work_day: wd, schedule: `${e.work_start || settings.work_start || '09:00'}-${e.work_end || settings.work_end || '17:00'}`, by_attendance: cfg.byAttendance, ...PAY.dayStats(r, cfg, wd) };
+    }),
   };
 });
 route('GET', '/api/attendance/month', ANY, ({ query, user }) => {
   const period = query.period || today().slice(0, 7);
   let empId = Number(query.employee_id || user.employee_id);
   if (!hasAny(user, ATT_READ)) empId = Number(user.employee_id); // staff see only their own sheet
-  const e = get('SELECT id, name, job, salary, pay_type, hire_date FROM employees WHERE id=?', empId);
+  const e = get('SELECT * FROM employees WHERE id=?', empId);
   if (!e) throw new HttpError(404, 'not_found');
   const res = attendanceCalc(e, period);
   if (!hasAny(user, ATT_READ)) { for (const k of ['salary', 'salary_due', 'absence_deduction', 'late_deduction', 'overtime_pay']) delete res[k]; }

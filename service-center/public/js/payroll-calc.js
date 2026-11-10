@@ -8,6 +8,9 @@
  * Employee: { salary, pay_type: monthly|weekly|daily|hourly, pay_cycle: monthly|weekly, hire_date }
  *   monthly: salary = monthly amount; weekly: salary = weekly amount; daily: day wage; hourly: hour wage
  * Period: "YYYY-MM" (a month) or "WYYYY-MM-DD" (the 7 days starting that date)
+ * Per employee (optional, empty = use the general settings):
+ *   attendance_based "1" = salary follows attendance (absence, lateness, overtime) / "0" = full salary
+ *   work_start, work_end, weekend_days = the employee's own schedule
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -37,6 +40,13 @@
       deductLate: String(s.deduct_late ?? '1') === '1',
       weekStart: num(s.week_start, 6), // 6 = Saturday
     };
+  }
+  // the employee's own schedule / attendance choice on top of the general settings
+  function empConfig(emp, settings = {}) {
+    const s = { ...settings };
+    for (const k of ['work_start', 'work_end', 'weekend_days']) if (emp && emp[k] !== undefined && emp[k] !== null && String(emp[k]).trim() !== '') s[k] = emp[k];
+    if (emp && (String(emp.attendance_based) === '1' || String(emp.attendance_based) === '0')) s.attendance_payroll = String(emp.attendance_based);
+    return config(s);
   }
   // pay cycle: weekly salaries are paid weekly, monthly ones monthly; daily/hourly follow pay_cycle
   const cycleOf = (emp) => (emp.pay_type === 'weekly' ? 'weekly' : emp.pay_type === 'daily' || emp.pay_type === 'hourly' ? (emp.pay_cycle === 'weekly' ? 'weekly' : 'monthly') : 'monthly');
@@ -76,7 +86,7 @@
 
   /** salary calculation for one employee and one month */
   function calc(emp, records, period, settings, today) {
-    const cfg = config(settings);
+    const cfg = empConfig(emp, settings);
     const byDate = {};
     for (const r of records || []) byDate[String(r.date).slice(0, 10)] = r;
     const payType = emp.pay_type || 'monthly';
@@ -132,5 +142,5 @@
     return res;
   }
 
-  return { calc, config, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
+  return { calc, config, empConfig, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
 }));

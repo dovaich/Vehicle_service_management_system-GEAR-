@@ -120,30 +120,33 @@
     try { await G.del(`/api/purchases/${p.id}`); G.toast(t('deleted')); after(); } catch (e) { G.fail(e); }
   };
 
-  G.addRoute('/purchases/new', async (view, p, q) => {
-    const isReturn = q.return === '1';
-    const accounts = G.can(R.MONEY) ? await G.loadAccounts(true).catch(() => []) : [];
-    let supplier = null;
-    if (q.supplier_id) supplier = await G.get(`/api/suppliers/${q.supplier_id}`).catch(() => null);
-    const items = [];
-    view.innerHTML = `<div class="page-head"><h2>🛒 ${isReturn ? t('purchase_return') : t('new_purchase')}</h2></div>
+  // one form for: new purchase, purchase return (optionally from an existing invoice) and editing an invoice
+  const purchaseForm = async (view, { isReturn, supplier, from, edit }) => {
+    const accounts = !edit && G.can(R.MONEY) ? await G.loadAccounts(true).catch(() => []) : [];
+    const srcInv = edit || from;
+    const items = srcInv ? srcInv.items.map((i) => ({ part_id: i.part_id, label: `${i.part_no || ''} ${G.tl(i.name_ar, i.name_en)}`.trim(), qty: Number(i.qty), unit_cost: Number(i.unit_cost), price: Number(i.price) || Number(i.part_price) || 0, max: from ? Number(i.qty) : null })) : [];
+    const title = edit ? `${t('edit')} ${edit.no}` : from ? `${t('purchase_return')} - ${from.no}` : isReturn ? t('purchase_return') : t('new_purchase');
+    const v = edit || {};
+    view.innerHTML = `<div class="page-head"><h2>🛒 ${esc(title)}</h2></div>
+      ${edit ? `<p class="alert">${t('purchase_edit_help')}</p>` : from ? `<p class="alert">${t('return_from_help')}</p>` : ''}
       <form class="card" novalidate>
         <div class="form-grid">
-          <div class="field"><label>${t('supplier')} <b class="req">*</b></label><div class="row-flex">${G.lookupHtml({ name: 'supplier_id', res: 'suppliers', required: true, display: supplier ? supplier.name : '' }, supplier ? supplier.id : '', 'sup')}<button type="button" class="btn" data-newsup>＋</button></div></div>
-          ${G.field({ name: 'supplier_invoice_no' })}${G.field({ name: 'date', type: 'date' }, G.today())}${G.field({ name: 'notes' })}
+          <div class="field"><label>${t('supplier')} <b class="req">*</b></label>${edit || from ? `<input type="text" readonly value="${esc(supplier.name)}"><input type="hidden" name="supplier_id" value="${esc(supplier.id)}">`
+    : `<div class="row-flex">${G.lookupHtml({ name: 'supplier_id', res: 'suppliers', required: true, display: supplier ? supplier.name : '' }, supplier ? supplier.id : '', 'sup')}<button type="button" class="btn" data-newsup>＋</button></div>`}</div>
+          ${G.field({ name: 'supplier_invoice_no' }, v.supplier_invoice_no)}${G.field({ name: 'date', type: 'date' }, v.date || G.today())}${G.field({ name: 'notes' }, from ? `${t('purchase_return')} ${from.no}` : v.notes)}
         </div>
         <h3 class="mt">${t('items')}</h3>
-        <div class="add-line form-grid">
+        ${from ? '' : `<div class="add-line form-grid">
           <div class="field span-2"><label>${t('part')}</label><div class="row-flex">${G.lookupHtml({ name: 'l_part', res: 'parts' }, '', 'lp')}<button type="button" class="btn" data-newpart>＋ ${t('new_part')}</button></div></div>
           ${G.field({ name: 'l_qty', label: t('qty'), type: 'number' }, 1)}${G.field({ name: 'l_cost', label: t('unit_cost'), type: 'number' })}
           ${isReturn ? '' : G.field({ name: 'l_price', label: t('sale_price'), type: 'number' })}
           <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-addline>＋ ${t('add_item')}</button></div>
-        </div>
+        </div>`}
         <div data-lines></div>
-        <div class="form-grid mt">${G.field({ name: 'discount', type: 'number' }, 0)}${G.field({ name: 'tax', label: t('vat'), type: 'number' }, 0)}
-          ${accounts.length ? `${G.field({ name: 'pay_amount', label: t('pay_now'), type: 'number' })}${G.field({ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true })}` : ''}</div>
+        <div class="form-grid mt">${G.field({ name: 'discount', type: 'number' }, v.discount || 0)}${G.field({ name: 'tax', label: t('vat'), type: 'number' }, v.tax || 0)}
+          ${accounts.length ? `${G.field({ name: 'pay_amount', label: isReturn ? t('refund_now') : t('pay_now'), type: 'number' })}${G.field({ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true })}` : ''}</div>
         <div class="totals" data-totals></div>
-        <div class="form-actions"><a class="btn" href="#/purchases">${t('cancel')}</a><button class="btn btn-primary btn-lg" type="submit">💾 ${t('save')}</button></div>
+        <div class="form-actions"><a class="btn" href="${edit ? '#/purchases/' + edit.id : from ? '#/purchases/' + from.id : '#/purchases'}">${t('cancel')}</a><button class="btn btn-primary btn-lg" type="submit">💾 ${t('save')}</button></div>
       </form>${catList}`;
     const form = view.querySelector('form');
     G.bindLookups(form);
@@ -156,27 +159,40 @@
       form.querySelector('[name=l_cost]').value = pt.cost || '';
       const lp = form.querySelector('[name=l_price]'); if (lp) lp.value = pt.price || '';
     };
-    partBox.addEventListener('pick', (e) => setPicked(e.detail));
-    view.querySelector('[data-newpart]').onclick = () => G.formDialog({
+    if (partBox) partBox.addEventListener('pick', (e) => setPicked(e.detail));
+    const np = view.querySelector('[data-newpart]');
+    if (np) np.onclick = () => G.formDialog({
       title: t('new_part'), wide: true, fields: partFields({}).filter((f) => f.name !== 'qty'),
       onSubmit: async (d, close) => { const pt = await G.post('/api/parts', d); close(); setPicked(pt); },
     });
-    view.querySelector('[data-newsup]').onclick = () => G.formDialog({
+    const ns = view.querySelector('[data-newsup]');
+    if (ns) ns.onclick = () => G.formDialog({
       title: t('supplier'), fields: supplierFields,
-      onSubmit: async (d, close) => { const s = await G.post('/api/suppliers', d); close(); const b = form.querySelector('.lookup[data-res=suppliers]'); b.querySelector('input[type=hidden]').value = s.id; b.querySelector('input[type=search]').value = s.name; },
+      onSubmit: async (d, close) => { const sp = await G.post('/api/suppliers', d); close(); const b = form.querySelector('.lookup[data-res=suppliers]'); b.querySelector('input[type=hidden]').value = sp.id; b.querySelector('input[type=search]').value = sp.name; },
     });
     const calc = () => {
-      const sub = items.reduce((s, i) => s + i.qty * i.unit_cost, 0);
+      const sub = items.reduce((sm, i) => sm + i.qty * i.unit_cost, 0);
       const total = sub - (Number(form.querySelector('[name=discount]').value) || 0) + (Number(form.querySelector('[name=tax]').value) || 0);
       view.querySelector('[data-totals]').innerHTML = `<div class="trow"><span>${t('subtotal')}</span><b>${G.money(sub)}</b></div><div class="trow big"><span>${t('total')}</span><b>${G.money(total)}</b></div>`;
+      view.querySelectorAll('[data-amt]').forEach((el) => { const i = items[el.dataset.amt]; if (i) el.textContent = G.money(i.qty * i.unit_cost); });
     };
+    // lines are editable in place: quantity, cost and sale price
+    const inp = (i, f) => `<input type="number" step="any" inputmode="decimal" class="line-in" data-li="${i}" data-f="${f}" value="${esc(items[i][f])}" ${f === 'qty' && items[i].max ? `max="${items[i].max}"` : ''}>`;
     const renderLines = () => {
-      view.querySelector('[data-lines]').innerHTML = G.table([{ key: 'label', label: t('part') }, { key: 'qty', cls: 'num' }, { key: 'unit_cost', cls: 'num', render: (i) => G.num(i.unit_cost) }, ...(isReturn ? [] : [{ key: 'price', label: t('sale_price'), cls: 'num', render: (i) => G.num(i.price) }]), { key: 'amount', cls: 'num', render: (i) => G.money(i.qty * i.unit_cost) }, { key: 'x', label: '', render: () => '<button type="button" class="icon-btn danger" data-rm>🗑</button>' }], items);
+      view.querySelector('[data-lines]').innerHTML = G.table([
+        { key: 'label', label: t('part') },
+        { key: 'qty', cls: 'num', render: (i) => inp(items.indexOf(i), 'qty') + (i.max ? `<br><small class="muted">${t('max_qty')}: ${G.num(i.max)}</small>` : '') },
+        { key: 'unit_cost', cls: 'num', render: (i) => inp(items.indexOf(i), 'unit_cost') },
+        ...(isReturn ? [] : [{ key: 'price', label: t('sale_price'), cls: 'num', render: (i) => inp(items.indexOf(i), 'price') }]),
+        { key: 'amount', cls: 'num', render: (i) => `<span data-amt="${items.indexOf(i)}">${G.money(i.qty * i.unit_cost)}</span>` },
+        { key: 'x', label: '', render: () => '<button type="button" class="icon-btn danger" data-rm>🗑</button>' }], items);
       view.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { items.splice(Number(b.closest('tr').dataset.i), 1); renderLines(); });
+      view.querySelectorAll('.line-in').forEach((el) => el.oninput = () => { items[el.dataset.li][el.dataset.f] = Number(el.value) || 0; calc(); });
       calc();
     };
     form.querySelectorAll('[name=discount],[name=tax]').forEach((i) => i.oninput = calc);
-    view.querySelector('[data-addline]').onclick = () => {
+    const al = view.querySelector('[data-addline]');
+    if (al) al.onclick = () => {
       if (!picked || !partBox.querySelector('input[type=hidden]').value) { G.toast(t('err_required') + ': ' + t('part'), 'err'); return; }
       const qty = Number(form.querySelector('[name=l_qty]').value) || 0;
       if (qty <= 0) { G.toast(t('err_invalid_qty'), 'err'); return; }
@@ -191,18 +207,38 @@
       e.preventDefault();
       const d = G.readForm(form);
       if (!d.supplier_id) { G.toast(t('err_required') + ': ' + t('supplier'), 'err'); return; }
-      if (!items.length) { G.toast(t('err_purchase_empty'), 'err'); return; }
-      const body = { supplier_id: d.supplier_id, supplier_invoice_no: d.supplier_invoice_no, date: d.date, notes: d.notes, discount: d.discount, tax: d.tax, is_return: isReturn ? 1 : 0, items };
+      const lines = items.filter((i) => i.qty > 0);
+      if (!lines.length) { G.toast(t('err_purchase_empty'), 'err'); return; }
+      const over = lines.find((i) => i.max && i.qty > i.max);
+      if (over) { G.toast(`${t('err_return_qty')}: ${over.label} (${t('max_qty')} ${over.max})`, 'err'); return; }
+      const body = { supplier_id: d.supplier_id, supplier_invoice_no: d.supplier_invoice_no, date: d.date, notes: d.notes, discount: d.discount, tax: d.tax, is_return: isReturn ? 1 : 0, items: lines };
       if (Number(d.pay_amount) > 0) body.payment = { amount: d.pay_amount, account_id: d.account_id };
-      try { const r = await G.post('/api/purchases', body); G.toast(t('saved')); location.hash = `#/purchases/${r.id}`; } catch (err) { G.fail(err); }
+      const btn = form.querySelector('[type=submit]'); btn.disabled = true;
+      try {
+        const r = edit ? await G.put(`/api/purchases/${edit.id}`, body) : await G.post('/api/purchases', body);
+        G.toast(t('saved')); location.hash = `#/purchases/${r.id}`;
+      } catch (err) { G.fail(err); btn.disabled = false; }
     };
+  };
+
+  G.addRoute('/purchases/new', async (view, p, q) => {
+    let from = null; let supplier = null;
+    if (q.from) { from = await G.get(`/api/purchases/${q.from}/full`); supplier = { id: from.supplier_id, name: from.supplier_name }; }
+    else if (q.supplier_id) supplier = await G.get(`/api/suppliers/${q.supplier_id}`).catch(() => null);
+    await purchaseForm(view, { isReturn: q.return === '1' || !!from, supplier, from });
   }, R.SUPP);
+  G.addRoute('/purchases/:id/edit', async (view, p) => {
+    const edit = await G.get(`/api/purchases/${p.id}/full`);
+    await purchaseForm(view, { isReturn: !!edit.is_return, supplier: { id: edit.supplier_id, name: edit.supplier_name }, edit });
+  }, R.MONEY);
 
   G.addRoute('/purchases/:id', async (view, p) => {
     const d = await G.get(`/api/purchases/${p.id}/full`);
     const due = Math.round((d.total - d.paid) * 100) / 100;
     view.innerHTML = `<div class="page-head"><h2>🛒 ${esc(d.no)} ${d.is_return ? G.badge('purchase_return') : ''} ${G.badge(d.status, d.status === 'paid' ? 'paid_' : '')}</h2><div class="head-actions">
         ${due > 0 && G.can(R.MONEY) ? `<button class="btn btn-primary" data-pay>💵 ${d.is_return ? t('refund') : t('pay_supplier')}</button>` : ''}
+        ${G.can(R.MONEY) ? `<a class="btn" href="#/purchases/${d.id}/edit">✎ ${t('edit')}</a>` : ''}
+        ${!d.is_return && G.can(R.SUPP) ? `<a class="btn" href="#/purchases/new?from=${d.id}">↩ ${t('return_from_invoice')}</a>` : ''}
         ${G.can(R.MGMT) ? `<button class="btn btn-danger" data-del>🗑 ${t('delete')}</button>` : ''}</div></div>
       <div class="card info-grid">${G.info(t('supplier'), `<a href="#/suppliers/${d.supplier_id}">${esc(d.supplier_name)}</a>`, true)}${G.info(t('supplier_invoice_no'), d.supplier_invoice_no)}${G.info(t('date'), d.date)}${G.info(t('notes'), d.notes)}</div>
       <section class="card"><h3>${t('items')}</h3>${G.table([{ key: 'part_no' }, { key: 'name', label: t('part'), render: (i) => esc(G.tl(i.name_ar, i.name_en)) }, { key: 'qty', cls: 'num' }, { key: 'unit_cost', cls: 'num', render: (i) => G.num(i.unit_cost) }, { key: 'amount', cls: 'num', render: (i) => G.money(i.amount) }], d.items)}</section>
