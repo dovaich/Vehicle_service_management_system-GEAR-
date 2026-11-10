@@ -152,7 +152,7 @@ function init() {
       async afterDelete(id, old) { await F.updateDoc(ref('customers', old.customer_id), { vehicles_count: inc(-1) }).catch(() => {}); await refreshPlates(old.customer_id); },
     },
     employees: {
-      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
+      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
       kw: (r) => [r.name, r.phone], order: ['name', 'asc'], small: true, filters: ['job', 'active'], read: ANY, write: MGMT,
       numeric: ['salary', 'labor_commission', 'parts_commission', 'active'], hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id'] },
       after: () => { cache.emps = null; },
@@ -285,10 +285,15 @@ function init() {
       order: ['date', 'desc'], dateCol: 'date', filters: ['employee_id', 'type', 'paid', 'period'], read: MONEY, write: MONEY, numeric: ['amount'],
       defaults: { type: 'bonus', paid: 0 }, deleteRoles: ['admin', 'manager', 'accountant'],
       async beforeSave(d) {
+        if (d.type === 'advance') throw bad('use_advance_form'); // advances move cash: /api/advances
         if (d.employee_id) { const e = (await emps()).find((x) => x.id === String(d.employee_id)); d.employee_name = e ? e.name : null; d.job = e ? e.job : null; }
         if (d.date === null) d.date = today();
       },
-      async beforeDelete(id, b) { if (b.paid) throw bad('already_paid'); },
+      async beforeDelete(id, b) {
+        if (b.paid) throw bad('already_paid');
+        // deleting an unsettled advance gives the money back to the cash account
+        if (b.type === 'advance' && b.transaction_id) { const t = await getRow('transactions', b.transaction_id); if (t) await removeTx(t); }
+      },
     },
     reminders: {
       cols: ['vehicle_id', 'customer_id', 'service_type_id', 'title', 'due_date', 'due_mileage', 'status', 'notes'], required: ['vehicle_id'],
@@ -478,7 +483,7 @@ function init() {
     const d = clean({
       date: t.date || today(), account_id: String(t.account_id), account_name: acc.name, direction: t.direction, amount: r2(t.amount), signed: t.direction === 'in' ? r2(t.amount) : -r2(t.amount),
       category: t.category, description: t.description || null, ref_type: t.ref_type || null, ref_id: t.ref_id ? String(t.ref_id) : null, party_type: t.party_type || null,
-      party_id: t.party_id ? String(t.party_id) : null, party_name: partyName, method: t.method || null, period: t.period || null, user_id: me.id, user_name: me.name, created_at: nowStr(),
+      party_id: t.party_id ? String(t.party_id) : null, party_name: partyName, method: t.method || null, period: t.period || null, salary_part: t.salary_part ?? null, user_id: me.id, user_name: me.name, created_at: nowStr(),
       is_expense: t.direction === 'out' && !['transfer', 'supplier_payment', 'refund'].includes(t.category),
     });
     d.kw = keywords(d.description, d.category, d.account_name, d.party_name);
@@ -798,27 +803,51 @@ function init() {
     return r;
   };
   const attId = (empId, date) => `${empId}_${date}`;
-  const attOfPeriod = async (period, empId) => (await all('attendance', ...(empId ? [W('employee_id', '==', String(empId))] : []), W('period', '==', period))).map(fixAtt);
+  const attOfPeriod = async (period, empId) => {
+    let rows;
+    if (PAY.isWeek(period)) { const days = PAY.periodDays(period); rows = await all('attendance', W('date', '>=', days[0]), W('date', '<=', days[6])); }
+    else rows = await all('attendance', ...(empId ? [W('employee_id', '==', String(empId))] : []), W('period', '==', period));
+    return rows.filter((r) => !empId || r.employee_id === String(empId)).map(fixAtt);
+  };
   async function attendanceCalc(e, period, recs) {
     recs = recs || await attOfPeriod(period, e.id);
     return PAY.calc(e, recs.filter((r) => r.employee_id === e.id), period, await settings(), today());
   }
 
+  const validPeriod = (p) => { if (!/^\d{4}-\d{2}$|^W\d{4}-\d{2}-\d{2}$/.test(String(p || ''))) throw bad('invalid_period'); return p; };
+  // period: "YYYY-MM" (monthly payroll) or "WYYYY-MM-DD" (weekly payroll)
   async function payroll(period) {
-    const list = (await emps()).filter((e) => Number(e.active)).sort((a, b) => (a.name < b.name ? -1 : 1));
+    validPeriod(period);
+    const cycle = PAY.isWeek(period) ? 'weekly' : 'monthly';
+    const list = (await emps()).filter((e) => Number(e.active) && PAY.cycleOf(e) === cycle).sort((a, b) => (a.name < b.name ? -1 : 1));
     await settings();
     const att = await attOfPeriod(period);
     const unpaid = await all('bonuses', W('paid', '==', 0));
     const sal = await all('transactions', W('category', '==', 'salary'), W('period', '==', period));
     return list.map((e) => {
       const mine = unpaid.filter((b) => b.employee_id === e.id);
-      const plus = r2(mine.filter((b) => b.type !== 'deduction').reduce((s, b) => s + b.amount, 0));
-      const minus = r2(mine.filter((b) => b.type === 'deduction').reduce((s, b) => s + b.amount, 0));
-      const paidSal = r2(sal.filter((t) => t.party_id === e.id).reduce((s, t) => s + t.amount, 0));
+      const sumT = (types) => r2(mine.filter((b) => types.includes(b.type || 'bonus')).reduce((s, b) => s + num(b.amount), 0));
+      const plus = sumT(['bonus', 'commission']); const minus = sumT(['deduction']); const adv = sumT(['advance']);
+      const paidSal = r2(sal.filter((t) => t.party_id === e.id).reduce((s, t) => s + num(t.salary_part ?? t.amount), 0));
       const a = PAY.calc(e, att.filter((r) => r.employee_id === e.id), period, cache.settings || {}, today());
       delete a.days;
-      return { employee_id: e.id, name: e.name, job: e.job, salary: num(e.salary), ...a, salary_paid: paidSal, bonuses: plus, deductions: minus, net: r2(a.salary_due - paidSal + plus - minus) };
+      return { employee_id: e.id, name: e.name, job: e.job, salary: num(e.salary), pay_cycle: cycle, ...a, period_label: PAY.periodLabel(period), salary_paid: paidSal, bonuses: plus, deductions: minus, advances: adv, net: r2(a.salary_due - paidSal + plus - minus - adv) };
     });
+  }
+  // give an employee an advance: cash leaves the account now, the next payroll deducts it
+  async function giveAdvance(body) {
+    const amount = r2(body.amount);
+    if (!(amount > 0)) throw bad('invalid_amount');
+    if (!body.employee_id || !body.account_id) throw bad('required');
+    const e = await mustRow('employees', body.employee_id);
+    const date = body.date || today();
+    const bref = newRef('bonuses');
+    const t = await addTx({ date, account_id: body.account_id, direction: 'out', amount, category: 'advance', description: `Advance - ${e.name}${body.reason ? ' - ' + body.reason : ''}`, ref_type: 'advance', ref_id: bref.id, party_type: 'employee', party_id: e.id, method: body.method || 'cash' });
+    const d = { employee_id: e.id, employee_name: e.name, job: e.job || null, date, period: date.slice(0, 7), type: 'advance', amount, reason: body.reason || null, paid: 0, transaction_id: t.id, created_at: nowStr() };
+    d.kw = keywords(e.name, d.reason, d.period);
+    await F.setDoc(bref, d);
+    await audit('advance', 'employees', e.id, { amount });
+    return { ...d, id: bref.id };
   }
   async function payPayroll(body) {
     const { employee_id, account_id, period } = body;
@@ -826,17 +855,21 @@ function init() {
     const e = await mustRow('employees', employee_id);
     const rowp = (await payroll(period)).find((x) => x.employee_id === String(employee_id));
     if (!rowp) throw bad('not_found');
-    const salaryDue = r2(rowp.salary_due - rowp.salary_paid);
-    if (salaryDue > 0) await addTx({ account_id, direction: 'out', amount: salaryDue, category: 'salary', description: `Salary ${period} - ${e.name}`, party_type: 'employee', party_id: e.id, period });
-    const net = r2(rowp.bonuses - rowp.deductions);
-    let tid = null;
-    if (net > 0) tid = (await addTx({ account_id, direction: 'out', amount: net, category: 'bonus', description: `Bonus/commission ${period} - ${e.name}`, party_type: 'employee', party_id: e.id, period })).id;
-    else if (net < 0 && salaryDue <= 0) return { ok: true, skipped: true };
+    // one net payment: salary + bonuses - deductions - advances
+    const salaryDue = Math.max(0, r2(rowp.salary_due - rowp.salary_paid));
+    const adj = r2(rowp.bonuses - rowp.deductions - rowp.advances);
+    if (!salaryDue && !adj) return { ok: true, nothing: true };
+    const cash = r2(salaryDue + adj);
+    const t = await addTx({ account_id, direction: 'out', amount: Math.max(0, cash), category: 'salary', description: `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${rowp.bonuses} - ${rowp.deductions} - ${rowp.advances})`, party_type: 'employee', party_id: e.id, period, salary_part: salaryDue });
     const b = F.writeBatch(db);
-    for (const x of await all('bonuses', W('employee_id', '==', e.id), W('paid', '==', 0))) b.update(ref('bonuses', x.id), { paid: 1, transaction_id: tid });
+    for (const x of await all('bonuses', W('employee_id', '==', e.id), W('paid', '==', 0))) b.update(ref('bonuses', x.id), { paid: 1, transaction_id: x.type === 'advance' && x.transaction_id ? x.transaction_id : t.id });
+    if (cash < 0) {
+      const cref = newRef('bonuses');
+      b.set(cref, { employee_id: e.id, employee_name: e.name, job: e.job || null, date: today(), period, type: 'advance', amount: -cash, reason: `Carried over from ${PAY.periodLabel(period)}`, paid: 0, transaction_id: null, created_at: nowStr(), kw: keywords(e.name, 'carried') });
+    }
     await b.commit();
-    await audit('payroll', 'employees', e.id, { period });
-    return { ok: true };
+    await audit('payroll', 'employees', e.id, { period, cash });
+    return { ok: true, paid: Math.max(0, cash), carried: cash < 0 ? -cash : 0 };
   }
 
   // ------------------------------------------------------------------ dashboard & reports
@@ -930,7 +963,7 @@ function init() {
     center_name_ar: 'مركز صيانة BMW', center_name_en: 'BMW Service Center', center_phone: '', center_address: '', tax_no: '', currency: 'EGP', vat_rate: '14', labor_rate: '600',
     invoice_footer_ar: 'شكراً لثقتكم - ضمان العمالة 30 يوم', invoice_footer_en: 'Thank you for your trust - 30 days labor warranty',
     reminder_days_ahead: '30', reminder_km_ahead: '1000', avg_km_per_month: '1500', allow_negative_stock: '0', logo: '', whatsapp_template_ar: '', whatsapp_template_en: '',
-    work_start: '09:00', work_end: '17:00', work_days_month: '26', weekend_days: '5', late_grace: '15', overtime_rate: '1.5', attendance_payroll: '0', deduct_late: '1',
+    work_start: '09:00', work_end: '17:00', work_days_month: '26', weekend_days: '5', late_grace: '15', overtime_rate: '1.5', attendance_payroll: '0', deduct_late: '1', week_start: '6',
   };
   const DEFAULT_SERVICES = [
     ['OIL', 'تغيير زيت المحرك والفلتر', 'Engine oil & filter service', 'CBS', 1, 600, 10000, 12], ['BRK-F', 'تغيير فرامل أمامي (تيل + طنابير)', 'Front brake pads & discs', 'Brakes', 1.5, 900, 40000, 0],
@@ -1270,6 +1303,7 @@ function init() {
     return { ok: true, created: n };
   });
   route('GET', '/api/payroll', MONEY, ({ query }) => payroll(query.period || today().slice(0, 7)));
+  route('POST', '/api/advances', MONEY, ({ body }) => giveAdvance(body));
   route('POST', '/api/payroll/pay', MONEY, ({ body }) => payPayroll(body));
   route('GET', '/api/attendance', ATT_READ, async ({ query }) => {
     const date = query.date || today();
@@ -1294,10 +1328,12 @@ function init() {
     const r = await getRow('attendance', attId(me.employee_id, today())).catch(() => null);
     return { linked: true, date: today(), record: fixAtt(r) };
   });
-  route('POST', '/api/attendance/punch', ANY, async ({ body }) => {
-    const mgr = hasAny(MGMT);
-    const empId = String(body.employee_id && mgr ? body.employee_id : me.employee_id || '');
-    if (!empId || empId === 'null') throw bad('not_linked_employee');
+  // attendance is recorded by the manager / accountant only (server timestamp)
+  const ATT_WRITE = ['admin', 'manager', 'accountant'];
+  route('POST', '/api/attendance/punch', ATT_WRITE, async ({ body }) => {
+    const mgr = true;
+    const empId = String(body.employee_id || '');
+    if (!empId) throw bad('required', { field: 'employee_id' });
     const e = await mustRow('employees', empId);
     const d = today(); const id = attId(empId, d);
     const r = await getRow('attendance', id).catch(() => null);
@@ -1315,7 +1351,7 @@ function init() {
     await audit('punch:' + (body.action || 'in'), 'attendance', empId);
     return fixAtt(await getRow('attendance', id));
   });
-  route('PUT', '/api/attendance', MGMT, async ({ body }) => {
+  route('PUT', '/api/attendance', ATT_WRITE, async ({ body }) => {
     const empId = String(body.employee_id || ''); const date = String(body.date || '').slice(0, 10);
     if (!empId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw bad('required');
     const e = await mustRow('employees', empId);
@@ -1327,7 +1363,7 @@ function init() {
     await audit('update', 'attendance', empId, { date, status });
     return { ...d, id: attId(empId, date) };
   });
-  route('DELETE', '/api/attendance/:id', MGMT, async ({ params }) => { await F.deleteDoc(ref('attendance', params.id)); return { ok: true }; });
+  route('DELETE', '/api/attendance/:id', ATT_WRITE, async ({ params }) => { await F.deleteDoc(ref('attendance', params.id)); return { ok: true }; });
 
   route('GET', '/api/reminders/due', FRONT, async ({ query }) => {
     const days = num(query.days, num(await getSetting('reminder_days_ahead', '30')));

@@ -7,11 +7,14 @@
   G.addRoute('/employees', (view) => G.listPage(view, {
     title: t('employees'), res: 'employees', csvName: 'employees',
     fields: [{ name: 'name', required: true, span: 2 }, { name: 'phone', type: 'tel' }, { name: 'job', type: 'select', options: G.opt(JOBS, 'j_'), default: 'technician', noEmpty: true },
-      { name: 'national_id' }, { name: 'hire_date', type: 'date' }, { name: 'pay_type', type: 'select', options: G.opt(['monthly', 'daily', 'hourly'], 'pay_'), default: 'monthly', noEmpty: true },
+      { name: 'national_id' }, { name: 'hire_date', type: 'date' }, { name: 'pay_type', type: 'select', options: G.opt(['monthly', 'weekly', 'daily', 'hourly'], 'pay_'), default: 'monthly', noEmpty: true },
+      { name: 'pay_cycle', type: 'select', options: G.opt(['monthly', 'weekly'], 'cycle_'), default: 'monthly', noEmpty: true, help: t('pay_cycle_help') },
       { name: 'salary', label: t('salary_amount'), type: 'number', help: t('salary_amount_help') }, { name: 'labor_commission', type: 'number', help: G.tl('نسبة من مصنعية الشغلانات التي نفذها', '% of labor the employee performed') },
       { name: 'parts_commission', type: 'number' }, { name: 'active', type: 'checkbox', default: 1 }, { name: 'notes', type: 'textarea', span: 2 }],
     filters: [{ name: 'job', type: 'select', options: G.opt(JOBS, 'j_') }],
     onSaved: () => G.loadEmployees(true),
+    extraButtons: G.can(R.MONEY) ? `<button class="btn btn-ok" data-adv>💵 ${t('new_advance')}</button>` : '',
+    after: (v, reload) => { const b = v.querySelector('[data-adv]'); if (b) b.onclick = () => G.advanceDialog(null, reload); },
     rowCls: (r) => (r.active ? '' : 'row-off'),
     columns: [{ key: 'name', render: (r) => `<b>${esc(r.name)}</b>${r.active ? '' : ' ' + G.badge('inactive')}` }, { key: 'job', render: (r) => t('j_' + r.job) }, { key: 'phone' },
       { key: 'hire_date', hideMobile: true }, { key: 'salary', cls: 'num', render: (r) => `${G.money(r.salary)}<br><small class="muted">${t('pay_' + (r.pay_type || 'monthly'))}</small>` }, { key: 'labor_commission', cls: 'num', render: (r) => G.num(r.labor_commission) + '%' },
@@ -77,6 +80,7 @@
       { name: 'work_days_month', type: 'number', help: t('work_days_month_help') }, { name: 'late_grace', type: 'number' },
       { name: 'overtime_rate', type: 'number', help: t('overtime_rate_help') }, { name: 'deduct_late', type: 'select', options: [['1', t('yes')], ['0', t('no')]], noEmpty: true },
       { name: 'weekend_days', type: 'chips', options: G.WEEKDAYS().map((d, i) => [String(i), d]), span: 2 },
+      { name: 'week_start', type: 'select', options: G.WEEKDAYS().map((d, i) => [String(i), d]), noEmpty: true, help: t('week_start_help') },
       { name: 'whatsapp_template_ar', type: 'textarea', span: 2, help: t('template_hint') }, { name: 'whatsapp_template_en', type: 'textarea', span: 2, help: t('template_hint') },
     ];
     view.innerHTML = `<div class="page-head"><h2>⚙ ${t('settings')}</h2></div>

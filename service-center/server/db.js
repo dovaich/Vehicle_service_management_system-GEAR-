@@ -389,6 +389,10 @@ db.exec(SCHEMA);
 // migrations
 if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name='extra_roles'").get()) db.exec('ALTER TABLE users ADD COLUMN extra_roles TEXT');
 if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_type'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_type TEXT DEFAULT 'monthly'");
+if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_cycle'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_cycle TEXT DEFAULT 'monthly'");
+// payroll payments: the pay period and the part of the payment that was salary (the rest is bonus/deductions/advances)
+if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='period'").get()) db.exec('ALTER TABLE transactions ADD COLUMN period TEXT');
+if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='salary_part'").get()) db.exec('ALTER TABLE transactions ADD COLUMN salary_part REAL');
 db.exec(`CREATE TABLE IF NOT EXISTS attendance (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -473,6 +477,7 @@ function seed() {
     overtime_rate: '1.5',
     attendance_payroll: '0',
     deduct_late: '1',
+    week_start: '6',
     reminder_km_ahead: '1000',
     avg_km_per_month: '1500',
   };

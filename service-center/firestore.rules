@@ -60,22 +60,11 @@ service cloud.firestore {
     }
     match /bonuses/{id} { allow read, write: if hasRole(MONEY()); }
 
-    // attendance: managers edit anything; staff can only check themselves in/out, stamped with the server clock
+    // attendance: recorded by the manager / accountant only; staff can read their own records
     match /attendance/{id} {
       allow read: if hasRole(['admin', 'manager', 'accountant'])
         || (active() && profile().get('employee_id', null) != null && resource.data.employee_id == profile().employee_id);
-      allow write: if hasRole(MGMT());
-      allow create: if active() && profile().get('employee_id', null) != null
-        && request.resource.data.employee_id == profile().employee_id
-        && id == request.resource.data.employee_id + '_' + request.resource.data.date
-        && request.resource.data.status == 'present'
-        && request.resource.data.check_in_at == request.time
-        && request.resource.data.keys().hasOnly(['employee_id', 'employee_name', 'date', 'period', 'status', 'check_in', 'check_in_at', 'created_at', 'self']);
-      allow update: if active() && profile().get('employee_id', null) != null
-        && resource.data.employee_id == profile().employee_id
-        && resource.data.get('check_out', null) == null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['check_out', 'check_out_at'])
-        && request.resource.data.check_out_at == request.time;
+      allow write: if hasRole(['admin', 'manager', 'accountant']);
     }
   }
 }

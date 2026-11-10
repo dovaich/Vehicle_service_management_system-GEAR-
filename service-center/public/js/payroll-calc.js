@@ -5,8 +5,9 @@
  *   late_grace 15 (minutes), overtime_rate 1.5, attendance_payroll "0"/"1" (monthly salaries follow attendance; off by default),
  *   deduct_late "1" (late arrival + early leave are deducted)
  * Attendance record: { date "YYYY-MM-DD", status: present|absent|leave|sick|holiday|unpaid, check_in "HH:MM", check_out "HH:MM" }
- * Employee: { salary, pay_type: monthly|daily|hourly, hire_date }
- *   monthly: salary = monthly amount; daily: salary = day wage; hourly: salary = hour wage
+ * Employee: { salary, pay_type: monthly|weekly|daily|hourly, pay_cycle: monthly|weekly, hire_date }
+ *   monthly: salary = monthly amount; weekly: salary = weekly amount; daily: day wage; hourly: hour wage
+ * Period: "YYYY-MM" (a month) or "WYYYY-MM-DD" (the 7 days starting that date)
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -34,8 +35,24 @@
       otRate: Math.max(0, num(s.overtime_rate, 1.5)),
       byAttendance: String(s.attendance_payroll ?? '0') === '1',
       deductLate: String(s.deduct_late ?? '1') === '1',
+      weekStart: num(s.week_start, 6), // 6 = Saturday
     };
   }
+  // pay cycle: weekly salaries are paid weekly, monthly ones monthly; daily/hourly follow pay_cycle
+  const cycleOf = (emp) => (emp.pay_type === 'weekly' ? 'weekly' : emp.pay_type === 'daily' || emp.pay_type === 'hourly' ? (emp.pay_cycle === 'weekly' ? 'weekly' : 'monthly') : 'monthly');
+  const isWeek = (period) => /^W\d{4}-\d{2}-\d{2}$/.test(String(period));
+  const addDays = (date, n) => { const d = new Date(date + 'T12:00:00'); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  /** "WYYYY-MM-DD" for the week containing date */
+  function weekOf(date, settings) {
+    const start = config(settings).weekStart;
+    const back = (new Date(date + 'T12:00:00').getDay() - start + 7) % 7;
+    return 'W' + addDays(date, -back);
+  }
+  function periodDays(period) {
+    if (isWeek(period)) { const s = period.slice(1); return Array.from({ length: 7 }, (_, i) => addDays(s, i)); }
+    return monthDays(period);
+  }
+  const periodLabel = (period) => (isWeek(period) ? `${period.slice(1)} → ${addDays(period.slice(1), 6)}` : period);
 
   // minutes for one day record
   function dayStats(rec, cfg, isWorkDay = true) {
@@ -70,7 +87,7 @@
       late_minutes: 0, early_minutes: 0, overtime_minutes: 0, worked_minutes: 0,
       absence_deduction: 0, late_deduction: 0, overtime_pay: 0, salary_due: 0, by_attendance: true, days: [],
     };
-    for (const date of monthDays(period)) {
+    for (const date of periodDays(period)) {
       const isWork = !cfg.weekend.includes(weekday(date));
       const rec = byDate[date];
       const st = dayStats(rec, cfg, isWork);
@@ -98,7 +115,9 @@
       res.overtime_pay = r2((res.overtime_minutes / 60) * salary * cfg.otRate);
       res.salary_due = r2((regular / 60) * salary + res.overtime_pay);
     } else {
-      const dayRate = salary / cfg.workDaysMonth;
+      // weekly salary: a day is salary / working days in the week; monthly: salary / working days per month
+      const workDaysWeek = Math.max(1, 7 - cfg.weekend.length);
+      const dayRate = payType === 'weekly' ? salary / workDaysWeek : salary / cfg.workDaysMonth;
       const minRate = dayRate / cfg.dayMinutes;
       if (!cfg.byAttendance) {
         res.by_attendance = false;
@@ -113,5 +132,5 @@
     return res;
   }
 
-  return { calc, config, dayStats, monthDays, weekday, toMin, PAID_LEAVE };
+  return { calc, config, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
 }));

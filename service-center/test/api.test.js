@@ -224,22 +224,82 @@ test('full service-center flow', async () => {
   await call('PUT', '/api/settings', { attendance_payroll: '0' });
   assert.equal((await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`)).salary_due, 2600, 'off = full salary');
 
-  // self check-in / check-out at the server clock
+  // attendance is recorded by the manager / accountant only - staff cannot check themselves in
   await call('POST', '/api/users', { username: 'emp1', name: 'Emp', role: 'technician', password: 'secret1', employee_id: mE.id });
   await call('POST', '/api/auth/login', { username: 'emp1', password: 'secret1' });
-  assert.equal((await call('GET', '/api/attendance/me')).record, null);
-  const pin = await call('POST', '/api/attendance/punch', { action: 'in', employee_id: dE.id }); // cannot punch for someone else
-  assert.equal(pin.employee_id, mE.id);
-  await call('POST', '/api/attendance/punch', { action: 'in' }, { expect: 400 });
-  const pout = await call('POST', '/api/attendance/punch', { action: 'out' });
-  assert.ok(pout.check_in && pout.check_out);
+  await call('POST', '/api/attendance/punch', { action: 'in' }, { expect: 403 });
+  await call('POST', '/api/attendance/punch', { action: 'in', employee_id: mE.id }, { expect: 403 });
+  await call('PUT', '/api/attendance', { employee_id: mE.id, date: '2026-09-30', status: 'present' }, { expect: 403 });
+  await call('GET', '/api/attendance', undefined, { expect: 403 });
   const own = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${dE.id}`);
   assert.equal(own.employee.id, mE.id, 'staff only see their own sheet');
   assert.equal(own.salary_due, undefined, 'no salary numbers for staff');
-  await call('PUT', '/api/attendance', { employee_id: mE.id, date: '2026-09-30', status: 'present' }, { expect: 403 });
-  await call('GET', '/api/attendance', undefined, { expect: 403 });
+  // the accountant records it
+  await call('POST', '/api/auth/login', { username: 'acc1', password: 'secret1' });
+  const pin = await call('POST', '/api/attendance/punch', { action: 'in', employee_id: mE.id });
+  assert.equal(pin.employee_id, mE.id);
+  const pout = await call('POST', '/api/attendance/punch', { action: 'out', employee_id: mE.id });
+  assert.ok(pout.check_in && pout.check_out);
+  await call('PUT', '/api/attendance', { employee_id: dE.id, date: '2026-09-30', status: 'leave' });
   cookie = adminCookie;
   assert.equal((await call('GET', '/api/attendance')).rows.find((r) => r.employee_id === mE.id).record.check_in, pout.check_in);
+  await call('DELETE', `/api/attendance/${(await call('GET', `/api/attendance/month?period=2026-09&employee_id=${dE.id}`)).days.find((x) => x.date === '2026-09-30').id}`);
+
+  // ---- weekly pay + advances (week of Sat 2026-09-26, Friday off)
+  const cashOf = async () => (await call('GET', '/api/accounts')).rows.find((x) => x.id === cash.id).balance;
+  await call('PUT', '/api/settings', { attendance_payroll: '1', week_start: '6' });
+  const wE = await call('POST', '/api/employees', { name: 'Weekly Guy', job: 'washer', pay_type: 'weekly', salary: 1200, hire_date: '2026-09-01' });
+  for (const d of ['2026-09-26', '2026-09-27', '2026-09-28', '2026-09-29', '2026-09-30']) await call('PUT', '/api/attendance', { employee_id: wE.id, date: d, status: 'present', check_in: '09:00', check_out: '17:00' });
+  // 2026-10-01 (Thu) absent
+  const wk = await call('GET', '/api/payroll?period=W2026-09-26');
+  assert.ok(!wk.find((x) => x.employee_id === mE.id), 'monthly staff not in weekly payroll');
+  assert.ok(!(await call('GET', '/api/payroll?period=2026-09')).find((x) => x.employee_id === wE.id), 'weekly staff not in monthly payroll');
+  let wr = wk.find((x) => x.employee_id === wE.id);
+  assert.equal(wr.working_days, 6); assert.equal(wr.absent_days, 1); assert.equal(wr.salary_due, 1000);
+  await call('GET', '/api/payroll?period=2026-9', undefined, { expect: 400 });
+  // advance 300 from cash -> shows in the cash journal, deducted from the weekly pay
+  let c0 = await cashOf();
+  const advW = await call('POST', '/api/advances', { employee_id: wE.id, amount: 300, account_id: cash.id, reason: 'urgent' });
+  assert.equal(advW.type, 'advance');
+  assert.equal(await cashOf(), Math.round((c0 - 300) * 100) / 100, 'advance leaves the cash account');
+  const advTx = (await call('GET', '/api/transactions?category=advance')).rows[0];
+  assert.equal(advTx.amount, 300); assert.equal(advTx.party_name, 'Weekly Guy');
+  const today2 = new Date().toISOString().slice(0, 10);
+  assert.ok((await call('GET', `/api/cash/daily?date=${advTx.date}`)).by_category.some((x) => x.category === 'advance'), 'advance in daily closing');
+  await call('POST', '/api/bonuses', { employee_id: wE.id, type: 'advance', amount: 50 }, { expect: 400 }); // must go through the advance form
+  await call('DELETE', `/api/transactions/${advTx.id}`, undefined, { expect: 400 }); // linked to the advance
+  wr = (await call('GET', '/api/payroll?period=W2026-09-26')).find((x) => x.employee_id === wE.id);
+  assert.equal(wr.advances, 300); assert.equal(wr.net, 700);
+  c0 = await cashOf();
+  await call('POST', '/api/payroll/pay', { employee_id: wE.id, account_id: cash.id, period: 'W2026-09-26' });
+  assert.equal(await cashOf(), Math.round((c0 - 700) * 100) / 100, 'net pay = salary - advance');
+  wr = (await call('GET', '/api/payroll?period=W2026-09-26')).find((x) => x.employee_id === wE.id);
+  assert.equal(wr.net, 0); assert.equal(wr.salary_paid, 1000); assert.equal(wr.advances, 0);
+  assert.equal((await call('GET', `/api/bonuses?employee_id=${wE.id}&type=advance`)).rows[0].paid, 1, 'advance settled');
+  // advance bigger than the pay -> carried over
+  await call('PUT', '/api/settings', { attendance_payroll: '0' });
+  await call('POST', '/api/advances', { employee_id: wE.id, amount: 1500, account_id: cash.id });
+  c0 = await cashOf();
+  wr = (await call('GET', '/api/payroll?period=W2026-10-03')).find((x) => x.employee_id === wE.id);
+  assert.equal(wr.salary_due, 1200); assert.equal(wr.net, -300);
+  const settle = await call('POST', '/api/payroll/pay', { employee_id: wE.id, account_id: cash.id, period: 'W2026-10-03' });
+  assert.equal(settle.paid, 0); assert.equal(settle.carried, 300);
+  assert.equal(await cashOf(), c0, 'nothing paid out');
+  wr = (await call('GET', '/api/payroll?period=W2026-10-03')).find((x) => x.employee_id === wE.id);
+  assert.equal(wr.salary_paid, 1200); assert.equal(wr.advances, 300, 'remaining advance carried');
+  // deductions bigger than bonuses are now really deducted (old bug)
+  const dd = await call('POST', '/api/employees', { name: 'Deduct Guy', job: 'technician', salary: 5000 });
+  await call('POST', '/api/bonuses', { employee_id: dd.id, type: 'deduction', amount: 400, reason: 'damage' });
+  await call('POST', '/api/bonuses', { employee_id: dd.id, type: 'bonus', amount: 100 });
+  c0 = await cashOf();
+  await call('POST', '/api/payroll/pay', { employee_id: dd.id, account_id: cash.id, period: '2026-11' });
+  assert.equal(await cashOf(), Math.round((c0 - 4700) * 100) / 100, '5000 + 100 - 400');
+  // deleting an unsettled advance gives the money back
+  const advD = await call('POST', '/api/advances', { employee_id: dd.id, amount: 250, account_id: cash.id });
+  c0 = await cashOf();
+  await call('DELETE', `/api/bonuses/${advD.id}`);
+  assert.equal(await cashOf(), Math.round((c0 + 250) * 100) / 100);
+  void today2;
 
   // ---- delete invoices (customer) and purchases (supplier): everything is reversed
   const bal = async (id) => (await call('GET', '/api/accounts')).rows.find((x) => x.id === id).balance;

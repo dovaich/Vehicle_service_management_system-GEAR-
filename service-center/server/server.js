@@ -110,7 +110,7 @@ const RES = {
   },
   employees: {
     table: 'employees',
-    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
+    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
     required: ['name'],
     select: 'SELECT e.* FROM employees e',
     alias: 'e',
@@ -356,9 +356,14 @@ const RES = {
     dateCol: 'b.date',
     order: 'b.id DESC',
     read: MONEY, write: MONEY,
+    beforeSave(data) {
+      if (data.type === 'advance') throw bad('use_advance_form'); // advances go through /api/advances (they move cash)
+    },
     beforeDelete(id) {
-      const b = get('SELECT paid FROM bonuses WHERE id=?', id);
+      const b = get('SELECT * FROM bonuses WHERE id=?', id);
       if (b && b.paid) throw bad('already_paid');
+      // deleting an unsettled advance gives the money back to the cash account
+      if (b && b.type === 'advance' && b.transaction_id) run('DELETE FROM transactions WHERE id=?', b.transaction_id);
     },
   },
   reminders: {
@@ -860,49 +865,69 @@ function commissions(from, to) {
 const ATT_STATUSES = ['present', 'absent', 'leave', 'sick', 'holiday', 'unpaid'];
 const nowHM = () => nowStr().slice(11, 16);
 function attendanceCalc(e, period) {
-  const recs = all("SELECT * FROM attendance WHERE employee_id=? AND substr(date,1,7)=?", e.id, period);
+  const days = PAY.periodDays(period);
+  const recs = all('SELECT * FROM attendance WHERE employee_id=? AND date BETWEEN ? AND ?', e.id, days[0], days[days.length - 1]);
   return PAY.calc(e, recs, period, D.allSettings(), today());
 }
+// period: "YYYY-MM" (monthly payroll) or "WYYYY-MM-DD" (weekly payroll, week start)
 function payroll(period) {
-  // period = YYYY-MM
-  const emps = all('SELECT id, name, job, salary, pay_type, hire_date FROM employees WHERE active=1 ORDER BY name');
+  const cycle = PAY.isWeek(period) ? 'weekly' : 'monthly';
+  const emps = all('SELECT id, name, job, salary, pay_type, pay_cycle, hire_date FROM employees WHERE active=1 ORDER BY name').filter((e) => PAY.cycleOf(e) === cycle);
   return emps.map((e) => {
     const a = attendanceCalc(e, period);
-    const b = get(`SELECT COALESCE(SUM(CASE WHEN type='deduction' THEN 0 ELSE amount END),0) AS plus,
-                          COALESCE(SUM(CASE WHEN type='deduction' THEN amount ELSE 0 END),0) AS minus
+    const b = get(`SELECT COALESCE(SUM(CASE WHEN type IN ('bonus','commission') THEN amount ELSE 0 END),0) AS plus,
+                          COALESCE(SUM(CASE WHEN type='deduction' THEN amount ELSE 0 END),0) AS minus,
+                          COALESCE(SUM(CASE WHEN type='advance' THEN amount ELSE 0 END),0) AS adv
                    FROM bonuses WHERE employee_id=? AND paid=0`, e.id);
-    const salaryPaid = get("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE category='salary' AND party_type='employee' AND party_id=? AND description LIKE ?", e.id, `%${period}%`).s;
-    const net = r2(a.salary_due - r2(salaryPaid) + b.plus - b.minus);
+    // salary already paid for this period (older payments kept the period only in the description)
+    const salaryPaid = get(`SELECT COALESCE(SUM(COALESCE(salary_part, amount)),0) AS s FROM transactions WHERE category='salary' AND party_type='employee' AND party_id=?
+                            AND (period=? OR (period IS NULL AND description LIKE ?))`, e.id, period, `%${period}%`).s;
+    const net = r2(a.salary_due - r2(salaryPaid) + b.plus - b.minus - b.adv);
     delete a.days;
-    return { employee_id: e.id, name: e.name, job: e.job, salary: e.salary, ...a, salary_paid: r2(salaryPaid), bonuses: r2(b.plus), deductions: r2(b.minus), net };
+    return { employee_id: e.id, name: e.name, job: e.job, salary: e.salary, pay_cycle: cycle, ...a, period_label: PAY.periodLabel(period), salary_paid: r2(salaryPaid), bonuses: r2(b.plus), deductions: r2(b.minus), advances: r2(b.adv), net };
+  });
+}
+// give an employee an advance: cash leaves the account now, and the next payroll deducts it
+function giveAdvance(body, user) {
+  const amount = r2(body.amount);
+  if (!(amount > 0)) throw bad('invalid_amount');
+  if (!body.employee_id || !body.account_id) throw bad('required');
+  const e = get('SELECT * FROM employees WHERE id=?', body.employee_id);
+  if (!e) throw new HttpError(404, 'not_found');
+  if (!get('SELECT id FROM accounts WHERE id=?', body.account_id)) throw bad('required', { field: 'account_id' });
+  const date = body.date || today();
+  return tx(() => {
+    const bid = Number(run("INSERT INTO bonuses(employee_id,date,period,type,amount,reason,paid) VALUES(?,?,?,'advance',?,?,0)", e.id, date, date.slice(0, 7), amount, body.reason || null).lastInsertRowid);
+    const tid = Number(run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,ref_type,ref_id,party_type,party_id,method,user_id)
+      VALUES(?,?,'out',?,'advance',?,'advance',?,'employee',?,?,?)`, date, body.account_id, amount, `Advance - ${e.name}${body.reason ? ' - ' + body.reason : ''}`, bid, e.id, body.method || 'cash', user.id).lastInsertRowid);
+    run('UPDATE bonuses SET transaction_id=? WHERE id=?', tid, bid);
+    audit(user, 'advance', 'employees', e.id, { amount });
+    return get('SELECT * FROM bonuses WHERE id=?', bid);
   });
 }
 
 function payPayroll(body, user) {
   const { employee_id, account_id, period } = body;
   if (!employee_id || !account_id || !period) throw bad('required');
+  validPeriod(period);
   const e = get('SELECT * FROM employees WHERE id=?', employee_id);
   if (!e) throw new HttpError(404, 'not_found');
   return tx(() => {
     const row = payroll(period).find((x) => x.employee_id === Number(employee_id));
     if (!row) throw bad('not_found');
-    const salaryDue = r2(row.salary_due - row.salary_paid);
-    if (salaryDue > 0 && body.include_salary !== false) {
-      run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id) VALUES(?,?,?,?,?,?,?,?,?)`,
-        today(), account_id, 'out', salaryDue, 'salary', `Salary ${period} - ${e.name}`, 'employee', e.id, user.id);
-    }
-    const net = r2(row.bonuses - row.deductions);
-    let tid = null;
-    if (net > 0) {
-      tid = Number(run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id) VALUES(?,?,?,?,?,?,?,?,?)`,
-        today(), account_id, 'out', net, 'bonus', `Bonus/commission ${period} - ${e.name}`, 'employee', e.id, user.id).lastInsertRowid);
-    } else if (net < 0 && salaryDue <= 0) {
-      // deductions exceeding bonuses with no salary to net against are left unpaid
-      return { ok: true, skipped: true };
-    }
-    run('UPDATE bonuses SET paid=1, transaction_id=? WHERE employee_id=? AND paid=0', tid, e.id);
-    audit(user, 'payroll', 'employees', e.id, { period });
-    return { ok: true };
+    // one net payment: salary + bonuses - deductions - advances
+    const salaryDue = Math.max(0, r2(row.salary_due - row.salary_paid));
+    const adj = r2(row.bonuses - row.deductions - row.advances);
+    if (!salaryDue && !adj) return { ok: true, nothing: true };
+    const cash = r2(salaryDue + adj);
+    const desc = `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${row.bonuses} - ${row.deductions} - ${row.advances})`;
+    const tid = Number(run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id,period,salary_part)
+      VALUES(?,?,'out',?,'salary',?,'employee',?,?,?,?)`, today(), account_id, Math.max(0, cash), desc, e.id, user.id, period, salaryDue).lastInsertRowid);
+    run("UPDATE bonuses SET paid=1, transaction_id=COALESCE(CASE WHEN type='advance' THEN transaction_id END, ?) WHERE employee_id=? AND paid=0", tid, e.id);
+    // advances/deductions larger than the pay: the rest stays as an advance for the next payroll
+    if (cash < 0) run("INSERT INTO bonuses(employee_id,date,period,type,amount,reason,paid) VALUES(?,?,?,'advance',?,?,0)", e.id, today(), period, -cash, `Carried over from ${PAY.periodLabel(period)}`);
+    audit(user, 'payroll', 'employees', e.id, { period, cash });
+    return { ok: true, paid: Math.max(0, cash), carried: cash < 0 ? -cash : 0 };
   });
 }
 
@@ -1105,7 +1130,7 @@ route('DELETE', '/api/users/:id', ['admin'], ({ params, user }) => {
 // settings
 const PUBLIC_SETTINGS = ['center_name_ar', 'center_name_en', 'center_phone', 'center_address', 'tax_no', 'currency', 'vat_rate', 'labor_rate',
   'invoice_footer_ar', 'invoice_footer_en', 'reminder_days_ahead', 'reminder_km_ahead', 'avg_km_per_month', 'allow_negative_stock', 'logo', 'whatsapp_template_ar', 'whatsapp_template_en',
-  'work_start', 'work_end', 'work_days_month', 'weekend_days', 'late_grace', 'overtime_rate', 'attendance_payroll', 'deduct_late'];
+  'work_start', 'work_end', 'work_days_month', 'weekend_days', 'late_grace', 'overtime_rate', 'attendance_payroll', 'deduct_late', 'week_start'];
 route('GET', '/api/settings', ANY, () => {
   const s = D.allSettings();
   const o = {};
@@ -1363,7 +1388,9 @@ route('POST', '/api/bonuses/commissions/approve', MONEY, ({ body, user }) => {
   audit(user, 'approve_commissions', 'bonuses', null, { from, to });
   return { ok: true, created: n };
 });
-route('GET', '/api/payroll', MONEY, ({ query }) => payroll(query.period || today().slice(0, 7)));
+const validPeriod = (p) => { if (!/^\d{4}-\d{2}$|^W\d{4}-\d{2}-\d{2}$/.test(String(p || ''))) throw bad('invalid_period'); return p; };
+route('GET', '/api/payroll', MONEY, ({ query }) => payroll(validPeriod(query.period || today().slice(0, 7))));
+route('POST', '/api/advances', MONEY, ({ body, user }) => giveAdvance(body, user));
 route('POST', '/api/payroll/pay', MONEY, ({ body, user }) => payPayroll(body, user));
 
 // attendance (check-in / check-out)
@@ -1393,26 +1420,25 @@ route('GET', '/api/attendance/me', ANY, ({ user }) => {
   if (!user.employee_id) return { linked: false };
   return { linked: true, date: today(), record: get('SELECT * FROM attendance WHERE employee_id=? AND date=?', user.employee_id, today()) || null };
 });
-route('POST', '/api/attendance/punch', ANY, ({ body, user }) => {
-  // managers punch anyone; everyone else only themselves, always at the server's clock
-  const empId = body.employee_id && hasAny(user, MGMT) ? Number(body.employee_id) : Number(user.employee_id);
-  if (!empId) throw bad('not_linked_employee');
+// attendance is recorded by the manager / accountant only (at the server's clock)
+const ATT_WRITE = ['admin', 'manager', 'accountant'];
+route('POST', '/api/attendance/punch', ATT_WRITE, ({ body, user }) => {
+  const empId = Number(body.employee_id);
+  if (!empId) throw bad('required', { field: 'employee_id' });
   if (!get('SELECT id FROM employees WHERE id=?', empId)) throw new HttpError(404, 'not_found');
   const d = today(); const tm = nowHM();
   const r = get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, d);
   if (body.action === 'out') {
     if (!r || !r.check_in) throw bad('not_checked_in');
-    if (r.check_out && !hasAny(user, MGMT)) throw bad('already_checked_out');
     run('UPDATE attendance SET check_out=? WHERE id=?', tm, r.id);
   } else {
-    if (r && r.check_in && !hasAny(user, MGMT)) throw bad('already_checked_in');
     if (r) run("UPDATE attendance SET check_in=?, status='present' WHERE id=?", tm, r.id);
     else run("INSERT INTO attendance(employee_id,date,status,check_in,user_id) VALUES(?,?,'present',?,?)", empId, d, tm, user.id);
   }
   audit(user, 'punch:' + (body.action || 'in'), 'attendance', empId);
   return get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, d);
 });
-route('PUT', '/api/attendance', MGMT, ({ body, user }) => {
+route('PUT', '/api/attendance', ATT_WRITE, ({ body, user }) => {
   const empId = Number(body.employee_id); const date = String(body.date || '').slice(0, 10);
   if (!empId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw bad('required');
   const status = ATT_STATUSES.includes(body.status) ? body.status : 'present';
@@ -1424,7 +1450,7 @@ route('PUT', '/api/attendance', MGMT, ({ body, user }) => {
   audit(user, 'update', 'attendance', empId, { date, status });
   return get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, date);
 });
-route('DELETE', '/api/attendance/:id', MGMT, ({ params, user }) => { run('DELETE FROM attendance WHERE id=?', params.id); audit(user, 'delete', 'attendance', Number(params.id)); return { ok: true }; });
+route('DELETE', '/api/attendance/:id', ATT_WRITE, ({ params, user }) => { run('DELETE FROM attendance WHERE id=?', params.id); audit(user, 'delete', 'attendance', Number(params.id)); return { ok: true }; });
 
 // reminders
 route('GET', '/api/reminders/due', FRONT, ({ query }) => {

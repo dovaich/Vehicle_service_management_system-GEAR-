@@ -240,7 +240,7 @@
     };
     await loadAccounts();
     const accs = G.cache.accounts;
-    const allCats = ['invoice_payment', 'refund', 'supplier_payment', 'supplier_refund', 'transfer', ...EXPENSE_CATS, ...INCOME_CATS];
+    const allCats = ['invoice_payment', 'refund', 'supplier_payment', 'supplier_refund', 'transfer', 'advance', ...EXPENSE_CATS, ...INCOME_CATS];
     G.tabs(view.querySelector('[data-tabs]'), [['tx', t('transactions')], ['daily', t('daily_closing')]], async (k, body) => {
       if (k === 'tx') {
         const lp = await G.listPage(body, {
@@ -321,20 +321,40 @@
   }, R.MONEY);
 
   // ---------------- bonuses, commissions, payroll ----------------
+  // advance (سلفة): money leaves the cash account now and is deducted in the next payroll
+  G.advanceDialog = async (employeeId, done) => {
+    await G.loadEmployees();
+    const accounts = await G.loadAccounts(true);
+    G.formDialog({
+      title: '💵 ' + t('new_advance'),
+      extra: `<p class="muted">${t('advance_help')}</p>`,
+      fields: [
+        { name: 'employee_id', label: t('employee'), type: 'select', options: G.empOptions(), required: true, span: 2 },
+        { name: 'amount', type: 'number', required: true }, { name: 'date', type: 'date', default: G.today() },
+        { name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true },
+        { name: 'method', type: 'select', options: G.opt(METHODS, 'm_'), default: 'cash', noEmpty: true }, { name: 'reason', span: 2 },
+      ],
+      values: { employee_id: employeeId || '' },
+      onSubmit: async (d, close) => { await G.post('/api/advances', d); close(); G.toast(t('saved')); done && done(); },
+    });
+  };
+
   G.addRoute('/bonuses', async (view) => {
     await G.loadEmployees(true);
     view.innerHTML = `<div class="page-head"><h2>🎁 ${t('bonuses')}</h2></div><div data-tabs></div>`;
     G.tabs(view.querySelector('[data-tabs]'), [['list', t('bonus') + ' / ' + t('deduction')], ['comm', t('commissions_calc')], ['payroll', t('payroll')]], async (k, body) => {
       if (k === 'list') {
         await G.listPage(body, {
-          title: t('bonus') + ' / ' + t('deduction'), res: 'bonuses', csvName: 'bonuses',
+          title: t('bonus') + ' / ' + t('deduction') + ' / ' + t('advances'), res: 'bonuses', csvName: 'bonuses',
+          extraButtons: `<button class="btn btn-ok" data-adv>💵 ${t('new_advance')}</button>`,
+          after: (v, reload) => { v.querySelector('[data-adv]').onclick = () => G.advanceDialog(null, reload); },
           fields: [{ name: 'employee_id', label: t('employee'), type: 'select', options: G.empOptions(), required: true }, { name: 'type', type: 'select', options: G.opt(['bonus', 'deduction', 'commission']), default: 'bonus', noEmpty: true },
             { name: 'amount', type: 'number', required: true }, { name: 'date', type: 'date', default: G.today() }, { name: 'period', label: t('month'), type: 'month', default: G.today().slice(0, 7) }, { name: 'reason', span: 2 }],
-          filters: [{ name: 'employee_id', label: t('employee'), type: 'select', options: G.empOptions() }, { name: 'type', type: 'select', options: G.opt(['bonus', 'deduction', 'commission']) },
+          filters: [{ name: 'employee_id', label: t('employee'), type: 'select', options: G.empOptions() }, { name: 'type', type: 'select', options: G.opt(['bonus', 'deduction', 'commission', 'advance']) },
             { name: 'paid', label: t('is_paid'), type: 'select', options: [['1', t('yes')], ['0', t('no')]] }, { name: 'from', type: 'date' }, { name: 'to', type: 'date' }],
-          columns: [{ key: 'date' }, { key: 'employee_name', label: t('employee') }, { key: 'type', render: (r) => G.badge(r.type) }, { key: 'amount', cls: 'num', render: (r) => `<b class="${r.type === 'deduction' ? 'neg' : 'pos'}">${G.money(r.amount)}</b>` },
-            { key: 'period', label: t('month') }, { key: 'reason' }, { key: 'paid', label: t('is_paid'), render: (r) => (r.paid ? '✔' : '') },
-            { key: 'a', label: '', render: (r) => (r.paid ? '' : '<button class="icon-btn" data-edit>✎</button><button class="icon-btn danger" data-delete>🗑</button>') }],
+          columns: [{ key: 'date' }, { key: 'employee_name', label: t('employee') }, { key: 'type', render: (r) => G.badge(r.type) }, { key: 'amount', cls: 'num', render: (r) => `<b class="${['deduction', 'advance'].includes(r.type) ? 'neg' : 'pos'}">${G.money(r.amount)}</b>` },
+            { key: 'period', label: t('month') }, { key: 'reason' }, { key: 'paid', label: t('is_paid'), render: (r) => (r.paid ? '✔' : r.type === 'advance' ? `<small class="muted">${t('advance_open')}</small>` : '') },
+            { key: 'a', label: '', render: (r) => (r.paid ? '' : `${r.type === 'advance' ? '' : '<button class="icon-btn" data-edit>✎</button>'}<button class="icon-btn danger" data-delete>🗑</button>`) }],
         });
       } else if (k === 'comm') {
         body.innerHTML = `<div class="toolbar">${G.field({ name: 'from', type: 'date' }, G.monthStart())}${G.field({ name: 'to', type: 'date' }, G.today())}<button class="btn btn-primary" data-approve>✔ ${t('approve_commissions')}</button></div><div class="card" data-out></div>`;
@@ -355,31 +375,55 @@
         };
         await load();
       } else {
-        body.innerHTML = `<div class="toolbar">${G.field({ name: 'period', label: t('month'), type: 'month' }, G.today().slice(0, 7))}<a class="btn" href="#/attendance">🕘 ${t('attendance')}</a></div>
+        body.innerHTML = `<div class="toolbar">
+            ${G.field({ name: 'cycle', label: '', type: 'segment', options: [['monthly', t('monthly_payroll')], ['weekly', t('weekly_payroll')]] }, 'monthly')}
+            <div data-pmonth>${G.field({ name: 'period', label: t('month'), type: 'month' }, G.today().slice(0, 7))}</div>
+            <div data-pweek hidden>${G.field({ name: 'week_day', label: t('week'), type: 'date' }, G.today())}</div>
+            <a class="btn" href="#/attendance">🕘 ${t('attendance')}</a></div>
+          <div class="count-line" data-plabel></div>
           ${G.settings.attendance_payroll === '1' ? '' : `<p class="alert">${t('attendance_payroll_off')}</p>`}<div class="card" data-out></div>`;
+        const periodNow = () => {
+          const weekly = body.querySelector('[name=cycle]:checked').value === 'weekly';
+          body.querySelector('[data-pmonth]').hidden = weekly; body.querySelector('[data-pweek]').hidden = !weekly;
+          return weekly ? GEAR_PAY.weekOf(body.querySelector('[name=week_day]').value || G.today(), G.settings) : body.querySelector('[name=period]').value;
+        };
         const load = async () => {
-          const period = body.querySelector('[name=period]').value;
+          const period = periodNow();
+          body.querySelector('[data-plabel]').textContent = `${t('period')}: ${GEAR_PAY.periodLabel(period)}`;
           const rows = await G.get('/api/payroll?period=' + period);
+          const owed = (r) => Math.max(0, r.salary_due - r.salary_paid) > 0.009 || r.bonuses || r.deductions || r.advances;
           body.querySelector('[data-out]').innerHTML = G.table([
             { key: 'name', label: t('employee'), render: (r) => `<b>${esc(r.name)}</b><br><small class="muted">${t('j_' + r.job)} · ${t('pay_' + (r.pay_type || 'monthly'))}</small>` },
             { key: 'salary', cls: 'num', render: (r) => G.money(r.salary) },
             { key: 'att', label: t('attendance'), render: (r) => `<small>${t('present_days')}: <b>${r.present_days}</b> · ${t('absent_days')}: <b class="${r.absent_days + r.unpaid_days ? 'neg' : ''}">${r.absent_days + r.unpaid_days}</b><br>${t('late_minutes')}: ${r.late_minutes + r.early_minutes} · ${t('overtime')}: ${Math.round(r.overtime_minutes / 6) / 10}h</small>` },
             { key: 'salary_due', cls: 'num', render: (r) => `${G.money(r.salary_due)}${r.by_attendance && (r.absence_deduction || r.late_deduction || r.overtime_pay) ? `<br><small class="muted">-${G.num(r.absence_deduction + r.late_deduction)} +${G.num(r.overtime_pay)}</small>` : ''}` },
             { key: 'salary_paid', cls: 'num', render: (r) => G.money(r.salary_paid) }, { key: 'bonuses', label: t('bonus'), cls: 'num', render: (r) => `<span class="pos">${G.money(r.bonuses)}</span>` },
-            { key: 'deductions', cls: 'num', render: (r) => `<span class="neg">${G.money(r.deductions)}</span>` }, { key: 'net', cls: 'num', render: (r) => `<b>${G.money(r.net)}</b>` },
-            { key: 'a', label: '', render: (r) => (r.net > 0 ? `<button class="btn btn-sm btn-primary" data-pay>💵 ${t('pay')}</button>` : '') },
-          ], rows, { foot: `<tr><td colspan="7" data-label=""></td><td class="num" data-label="${t('net')}"><b>${G.money(rows.reduce((s, r) => s + Math.max(0, r.net), 0))}</b></td><td></td></tr>` });
+            { key: 'deductions', cls: 'num', render: (r) => `<span class="neg">${G.money(r.deductions)}</span>` },
+            { key: 'advances', cls: 'num', render: (r) => (r.advances ? `<span class="neg">${G.money(r.advances)}</span>` : '-') },
+            { key: 'net', cls: 'num', render: (r) => `<b class="${r.net < 0 ? 'neg' : ''}">${G.money(r.net)}</b>` },
+            { key: 'a', label: '', cls: 'actions-wide', render: (r) => `${owed(r) ? `<button class="btn btn-sm btn-primary" data-pay>💵 ${r.net > 0 ? t('pay') : t('settle')}</button>` : '<span class="badge b-done">✔</span>'}
+              <button class="btn btn-sm" data-adv>${t('advance')}</button>` },
+          ], rows, { foot: `<tr><td colspan="8" data-label=""></td><td class="num" data-label="${t('net')}"><b>${G.money(rows.reduce((s, r) => s + Math.max(0, r.net), 0))}</b></td><td></td></tr>` });
+          body.querySelectorAll('[data-adv]').forEach((b) => b.onclick = () => G.advanceDialog(rows[b.closest('tr').dataset.i].employee_id, load));
           body.querySelectorAll('[data-pay]').forEach((b) => b.onclick = async () => {
             const r = rows[b.closest('tr').dataset.i];
             const accounts = await G.loadAccounts(true);
+            const sal = Math.max(0, Math.round((r.salary_due - r.salary_paid) * 100) / 100);
             G.formDialog({
-              title: `${t('pay')} - ${r.name} (${G.money(r.net)})`,
+              title: `${r.net > 0 ? t('pay') : t('settle')} - ${r.name}`,
+              extra: `<div class="totals mt">
+                <div class="trow"><span>${t('salary_due')} (${esc(GEAR_PAY.periodLabel(period))})</span><b>${G.money(sal)}</b></div>
+                <div class="trow"><span>${t('bonus')}</span><b class="pos">+ ${G.money(r.bonuses)}</b></div>
+                <div class="trow"><span>${t('deductions')}</span><b class="neg">- ${G.money(r.deductions)}</b></div>
+                <div class="trow"><span>${t('advances')}</span><b class="neg">- ${G.money(r.advances)}</b></div>
+                <div class="trow big"><span>${t('cash_to_pay')}</span><b>${G.money(Math.max(0, r.net))}</b></div>
+                ${r.net < 0 ? `<p class="alert">${t('advance_carry')}: ${G.money(-r.net)}</p>` : ''}</div>`,
               fields: [{ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true }],
               onSubmit: async (d, close) => { await G.post('/api/payroll/pay', { employee_id: r.employee_id, account_id: d.account_id, period }); close(); G.toast(t('saved')); load(); },
             });
           });
         };
-        body.querySelector('[name=period]').onchange = () => load().catch(G.fail);
+        body.querySelectorAll('[name=period],[name=week_day],[name=cycle]').forEach((i) => i.onchange = () => load().catch(G.fail));
         await load();
       }
     });

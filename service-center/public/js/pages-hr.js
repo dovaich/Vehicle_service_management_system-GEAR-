@@ -2,6 +2,7 @@
 (function () {
   const { t, esc, R } = G;
   const ATT_READ = ['admin', 'manager', 'accountant'];
+  const ATT_WRITE = ['admin', 'manager', 'accountant']; // attendance is recorded by the manager / accountant only
   const STATUSES = ['present', 'absent', 'leave', 'sick', 'holiday', 'unpaid'];
   G.WEEKDAYS = () => (G.lang === 'ar' ? ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'] : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
   const hm = (m) => (m ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : '-');
@@ -42,7 +43,7 @@
       const st = form.querySelector('[name=status]');
       const sync = () => form.querySelectorAll('[name=check_in],[name=check_out]').forEach((i) => { i.closest('.field').hidden = st.value !== 'present'; });
       st.onchange = sync; sync();
-      if (rec && rec.id && G.can(R.MGMT)) {
+      if (rec && rec.id && G.can(ATT_WRITE)) {
         const foot = m.querySelector('.modal-foot');
         const del = document.createElement('button');
         del.className = 'btn btn-ghost'; del.type = 'button'; del.textContent = '🗑 ' + t('delete');
@@ -59,7 +60,7 @@
       const date = body.querySelector('[name=date]').value;
       const d = await G.get('/api/attendance?date=' + date);
       const isToday = date === G.today();
-      const canEdit = G.can(R.MGMT);
+      const canEdit = G.can(ATT_WRITE);
       const present = d.rows.filter((r) => r.record && r.record.status === 'present').length;
       body.querySelector('[data-out]').innerHTML = `<div class="count-line">${G.WEEKDAYS()[new Date(date + 'T12:00:00').getDay()]} ${d.work_day ? '' : '· ' + t('day_off')} · ${t('at_present')}: <b>${present}</b> / ${d.rows.length}</div>`
         + G.table([
@@ -113,7 +114,7 @@
     { key: 'late', label: t('late_minutes'), cls: 'num', render: (x) => (x.late || x.early ? `<span class="neg">${x.late + x.early}</span>` : '') },
     { key: 'overtime', label: t('overtime'), cls: 'num', render: (x) => (x.overtime ? `<span class="pos">${hm(x.overtime)}</span>` : '') },
     { key: 'worked', label: t('worked_hours'), cls: 'num', hideMobile: true, render: (x) => (x.worked ? hm(x.worked) : '') },
-    ...(G.can(R.MGMT) ? [{ key: 'a', label: '', render: () => '<button class="icon-btn" data-e>✎</button>' }] : []),
+    ...(G.can(ATT_WRITE) ? [{ key: 'a', label: '', render: () => '<button class="icon-btn" data-e>✎</button>' }] : []),
   ], d.days, { rowCls: (x) => (x.status === 'absent' ? 'row-bad' : x.work_day ? '' : 'row-off') })}</div>`;
       body.querySelector('[data-out]').innerHTML = html;
       body.querySelectorAll('[data-e]').forEach((b) => b.onclick = () => {
@@ -128,8 +129,7 @@
 
   G.addRoute('/attendance', async (view) => {
     const mgr = G.can(ATT_READ);
-    view.innerHTML = `<div class="page-head"><h2>🕘 ${t('attendance')}</h2></div><div data-punch></div><div data-tabs></div>`;
-    G.punchCard(view.querySelector('[data-punch]'));
+    view.innerHTML = `<div class="page-head"><h2>🕘 ${t('attendance')}</h2></div><div data-tabs></div>`;
     const tabsEl = view.querySelector('[data-tabs]');
     if (!mgr) {
       if (!G.user.employee_id) { tabsEl.innerHTML = `<div class="empty">${t('err_not_linked_employee')}</div>`; return; }

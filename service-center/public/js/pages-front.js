@@ -91,7 +91,6 @@
         </section>
       </div>`;
     G.bindRowLinks(view);
-    if (G.punchCard) G.punchCard(view.querySelector('[data-punch]'));
     const nc = view.querySelector('[data-newcust]');
     if (nc) nc.onclick = () => G.newCustomerVehicle((v) => { location.hash = `#/vehicles/${v.id}`; });
     const na = view.querySelector('[data-newappt]');
