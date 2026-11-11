@@ -37,11 +37,16 @@
 
   // quick invoice: labor + parts + anything else, no work order needed; the customer and car are optional and
   // are registered automatically from what is typed (nothing typed = the shared cash customer)
-  G.addRoute('/invoices/new', async (view) => {
-    const [accounts, sts] = await Promise.all([G.loadAccounts().catch(() => []), G.loadServiceTypes().catch(() => []), G.loadEmployees()]);
+  // edit = an existing invoice to change (its lines, customer, car...); otherwise a new quick invoice
+  const quickInvoiceForm = async (view, edit) => {
+    const [accounts0, sts] = await Promise.all([G.loadAccounts().catch(() => []), G.loadServiceTypes().catch(() => []), G.loadEmployees()]);
+    const accounts = edit ? [] : accounts0; // payments of an existing invoice are added from its page
     const items = [];
     const techs = () => G.empOptions();
-    view.innerHTML = `<div class="page-head"><h2>🧾 ${t('quick_invoice')}</h2></div>
+    const draft = G.draft(edit ? `invoice_edit_${edit.id}` : 'quick_invoice');
+    let pickedCust = null;
+    view.innerHTML = `<div class="page-head"><h2>🧾 ${edit ? `${t('edit_invoice')} ${esc(edit.no)}` : t('quick_invoice')}</h2></div>
+      <div data-draftbar></div>
       <form novalidate>
         <section class="card"><h3>👤 ${t('customer')} <small class="muted">(${t('optional')})</small></h3>
           <div class="form-grid">
@@ -83,7 +88,7 @@
             ${G.field({ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, a.name]), noEmpty: true })}
             ${G.field({ name: 'method', type: 'select', options: G.opt(METHODS, 'm_'), noEmpty: true }, 'cash')}</div>` : ''}
         </section>
-        <div class="form-actions"><a class="btn" href="#/invoices">${t('cancel')}</a>
+        <div class="form-actions"><a class="btn" href="${edit ? '#/invoices/' + edit.id : '#/invoices'}">${t('cancel')}</a>
           <button class="btn btn-lg" type="button" data-saveprint>🖨 ${t('save_print')}</button>
           <button class="btn btn-primary btn-lg" type="submit">💾 ${t('save')}</button></div>
       </form>`;
@@ -95,13 +100,14 @@
     const vehBox = form.querySelector('.lookup[data-res=vehicles]');
     custBox.addEventListener('pick', (e) => {
       const c = e.detail;
+      pickedCust = { id: c.id, name: c.name, phone: c.phone };
       form.querySelector('[data-newcust]').hidden = true;
       const pk = form.querySelector('[data-picked]');
       pk.hidden = false;
       pk.innerHTML = `<b>${esc(c.name)}</b> ${esc(c.phone || '')} <button type="button" class="btn btn-sm btn-ghost" data-unpick>✕ ${t('other_customer')}</button>`;
       pk.querySelector('[data-unpick]').onclick = () => {
         custBox.querySelector('input[type=hidden]').value = ''; custBox.querySelector('input[type=search]').value = '';
-        pk.hidden = true; form.querySelector('[data-newcust]').hidden = false; delete vehBox.dataset.filter;
+        pk.hidden = true; form.querySelector('[data-newcust]').hidden = false; delete vehBox.dataset.filter; pickedCust = null; saveDraft();
       };
       vehBox.dataset.filter = `customer_id=${c.id}`;
     });
@@ -174,6 +180,37 @@
     };
     const fb = view.querySelector('[data-full]');
     if (fb) fb.onclick = () => { val('pay_amount').value = total().total; };
+    // ---- draft: everything typed is kept on this device until the invoice is saved
+    let dTimer;
+    function saveDraft() { clearTimeout(dTimer); dTimer = setTimeout(() => draft.save({ form: G.formState(form), items, cust: pickedCust }), 250); }
+    const pickCust = (c) => {
+      custBox.querySelector('input[type=hidden]').value = c.id; custBox.querySelector('input[type=search]').value = c.name || '';
+      custBox.dispatchEvent(new CustomEvent('pick', { detail: c }));
+    };
+    const showVeh = (hasVeh) => { form.querySelector('[data-newveh]').hidden = hasVeh; };
+    const saved = draft.load();
+    if (saved) {
+      G.restoreForm(form, saved.data.form);
+      items.push(...(saved.data.items || []));
+      if (saved.data.cust) pickCust(saved.data.cust);
+      if (saved.data.form && saved.data.form.vehicle_id) showVeh(true);
+      G.draftBanner(view.querySelector('[data-draftbar]'), saved.at, () => { draft.clear(); G.route(); });
+    } else if (edit) {
+      pickCust({ id: edit.customer_id, name: edit.customer.name, phone: edit.customer.phone });
+      if (edit.vehicle) {
+        vehBox.querySelector('input[type=hidden]').value = edit.vehicle.id;
+        vehBox.querySelector('input[type=search]').value = G.vehLabel(edit.vehicle);
+        showVeh(true);
+      }
+      val('discount').value = edit.discount || 0; val('tax_rate').value = edit.tax_rate; val('date').value = edit.date; val('notes').value = edit.notes || '';
+      items.push(...edit.items.map((i) => ({ kind: i.kind, part_id: i.part_id || null, description: i.description || '', technician_id: i.technician_id || null, qty: Number(i.qty), unit_price: Number(i.unit_price) })));
+    }
+    syncKind();
+    form.addEventListener('input', saveDraft); form.addEventListener('change', saveDraft);
+    form.addEventListener('pick', saveDraft);
+    // adding / removing lines is kept too (typing in a line bubbles up as an input event)
+    view.querySelector('[data-addline]').addEventListener('click', saveDraft);
+    view.querySelector('[data-lines]').addEventListener('click', (e) => { if (e.target.closest('[data-rm]')) setTimeout(saveDraft, 0); });
     renderLines();
     const save = async (print) => {
       if (!items.length) { G.toast(t('err_invoice_empty'), 'err'); return; }
@@ -187,14 +224,21 @@
       if (Number(d.pay_amount) > 0) body.payment = { amount: d.pay_amount, account_id: d.account_id, method: d.method };
       view.querySelectorAll('.form-actions .btn').forEach((b) => { b.disabled = true; });
       try {
-        const inv = await G.post('/api/invoices', body);
+        const inv = edit ? await G.put(`/api/invoices/${edit.id}/full`, body) : await G.post('/api/invoices', body);
+        clearTimeout(dTimer); draft.clear();
         G.toast(t('saved'));
         location.hash = `#/invoices/${inv.id}${print ? '?print=1' : ''}`;
       } catch (err) { G.fail(err); view.querySelectorAll('.form-actions .btn').forEach((b) => { b.disabled = false; }); }
     };
     form.onsubmit = (e) => { e.preventDefault(); save(false); };
     view.querySelector('[data-saveprint]').onclick = () => save(true);
-  }, R.BILL);
+  };
+  G.addRoute('/invoices/new', (view) => quickInvoiceForm(view, null), R.BILL);
+  G.addRoute('/invoices/:id/edit', async (view, p) => {
+    const inv = await G.get(`/api/invoices/${p.id}/full`);
+    if (inv.status === 'cancelled') throw new Error(t('err_invoice_cancelled'));
+    await quickInvoiceForm(view, inv);
+  }, R.MONEY);
 
   G.invoicePrint = (inv) => {
     const s = G.settings;
@@ -228,6 +272,7 @@
           <button class="btn" data-print>🖨 ${t('print')}</button>
           ${inv.customer.phone ? `<a class="btn btn-wa" target="_blank" rel="noopener" href="${G.waLink(inv.customer.phone, shareText)}">🟢 ${t('share')}</a>` : ''}
           ${inv.status !== 'cancelled' && due > 0 && G.can(R.MONEY.concat(['advisor'])) ? `<button class="btn btn-primary" data-pay>💵 ${t('add_payment')}</button>` : ''}
+          ${inv.status !== 'cancelled' && G.can(R.MONEY) ? `<a class="btn" href="#/invoices/${inv.id}/edit">✎ ${t('edit')}</a>` : ''}
           ${inv.status !== 'cancelled' && G.can(R.MGMT) ? `<button class="btn" data-disc>％ ${t('edit_discount')}</button>` : ''}
           ${inv.status !== 'cancelled' && inv.paid > 0 && G.can(R.MONEY) ? `<button class="btn" data-refund>↩ ${t('refund')}</button>` : ''}
           ${inv.status !== 'cancelled' && inv.paid <= 0 && G.can(R.MGMT) ? `<button class="btn" data-cancel>✖ ${t('cancel_invoice')}</button>` : ''}

@@ -791,6 +791,53 @@ function cancelInvoice(id, user) {
   });
 }
 
+// Edit a customer invoice after it was saved: lines, customer, car, discount, tax, date, notes.
+// Stock follows the difference in parts; payments stay (the new total cannot go below what was paid).
+function editInvoice(id, body, user) {
+  const inv = get('SELECT * FROM invoices WHERE id=?', id);
+  if (!inv) throw new HttpError(404, 'not_found');
+  if (inv.status === 'cancelled') throw bad('invoice_cancelled');
+  const items = Array.isArray(body.items) ? body.items.filter((i) => i.description || i.part_id || i.service_type_id) : [];
+  if (!items.length) throw bad('invoice_empty');
+  return tx(() => {
+    const customerId = body.customer_id || (body.customer && (body.customer.name || body.customer.phone)) ? resolveCustomer(body) : inv.customer_id;
+    const vehicleId = body.vehicle_id || (body.vehicle && (body.vehicle.plate || body.vehicle.model)) ? resolveVehicle(body, customerId) : (customerId === inv.customer_id ? inv.vehicle_id : null);
+    const old = all('SELECT * FROM invoice_items WHERE invoice_id=?', id);
+    const qtyBy = (rows, pid) => rows.filter((r) => String(r.part_id) === String(pid)).reduce((s, r) => s + num(r.qty, 1), 0);
+    const pids = [...new Set([...old, ...items].filter((r) => r.part_id).map((r) => String(r.part_id)))];
+    for (const pid of pids) {
+      const d = r2(qtyBy(items, pid) - qtyBy(old, pid));
+      if (d > 0) stockMove(pid, 'out', d, null, 'invoice', id, `Edited ${inv.no}`, user);
+      if (d < 0) stockMove(pid, 'return', -d, null, 'invoice', id, `Edited ${inv.no}`, user);
+    }
+    run('DELETE FROM invoice_items WHERE invoice_id=?', id);
+    for (const it of items) {
+      const qty = num(it.qty, 1);
+      let desc = it.description; let cost = num(it.unit_cost);
+      let kind = it.kind === 'labor' || it.service_type_id ? 'labor' : it.kind || 'other';
+      if (it.service_type_id && !desc) { const st = get('SELECT * FROM service_types WHERE id=?', it.service_type_id); if (st) desc = `${st.name_ar} / ${st.name_en}`; }
+      if (it.part_id) {
+        const p = get('SELECT * FROM parts WHERE id=?', it.part_id);
+        if (!p) throw bad('part_not_found');
+        kind = 'part'; desc = desc || [p.part_no, p.name_en, p.name_ar].filter(Boolean).join(' - ');
+        const was = old.find((o) => String(o.part_id) === String(p.id));
+        cost = was ? num(was.unit_cost) : num(p.cost);
+      }
+      run('INSERT INTO invoice_items(invoice_id,kind,description,qty,unit_price,unit_cost,amount,part_id,technician_id) VALUES(?,?,?,?,?,?,?,?,?)',
+        id, kind, desc, qty, r2(it.unit_price), cost, r2(qty * num(it.unit_price)), it.part_id || null, it.technician_id || null);
+    }
+    const taxRate = body.tax_rate !== undefined && body.tax_rate !== '' && body.tax_rate !== null ? num(body.tax_rate) : inv.tax_rate;
+    run('UPDATE invoices SET customer_id=?, vehicle_id=?, date=?, discount=?, tax_rate=?, notes=? WHERE id=?', customerId, vehicleId || null, body.date || inv.date,
+      r2(body.discount ?? inv.discount), taxRate, body.notes !== undefined ? body.notes || null : inv.notes, id);
+    if (customerId !== inv.customer_id) run("UPDATE transactions SET party_id=? WHERE ref_type='invoice' AND ref_id=?", customerId, id);
+    recalcInvoice(id);
+    const after = get('SELECT * FROM invoices WHERE id=?', id);
+    if (after.paid > after.total + 0.009) throw bad('total_below_paid', { due: r2(after.paid) });
+    audit(user, 'edit', 'invoices', id, { old_total: inv.total, total: after.total });
+    return invoiceFull(id, user);
+  });
+}
+
 // Delete an invoice completely: its payments leave the cash accounts, parts of a counter sale go back
 // to stock, and a work-order invoice frees the work order so it can be edited and invoiced again.
 function deleteInvoice(id, user) {
@@ -814,12 +861,27 @@ function deleteInvoice(id, user) {
 // ---------------------------------------------------------------------------
 // Purchases
 // ---------------------------------------------------------------------------
+// A purchase line can name a part that is not in stock yet (new_name / new_part_no): it is registered
+// automatically - or matched to an existing part with the same code or name - so nobody has to add it first.
+function ensurePart(it, supplierId) {
+  if (it.part_id) return;
+  const name = String(it.new_name || '').trim(); const code = String(it.new_part_no || '').trim();
+  if (!name && !code) throw bad('required', { field: 'part' });
+  const ex = (code && get('SELECT id FROM parts WHERE part_no=? OR oem_no=? LIMIT 1', code, code))
+    || (name && get('SELECT id FROM parts WHERE LOWER(name_en)=LOWER(?) OR name_ar=? LIMIT 1', name, name));
+  if (ex) { it.part_id = ex.id; return; }
+  it.part_id = Number(run("INSERT INTO parts(part_no,name_en,name_ar,unit,qty,min_qty,cost,price,supplier_id,active,notes) VALUES(?,?,?,'pcs',0,0,0,?,?,1,?)",
+    code || null, name || code, /[\u0600-\u06FF]/.test(name) ? name : null, r2(it.price), supplierId || null, 'Added from a purchase invoice').lastInsertRowid);
+}
+const purchaseLines = (body) => (Array.isArray(body.items) ? body.items : []).filter((i) => (i.part_id || i.new_name || i.new_part_no) && num(i.qty) > 0);
+
 function createPurchase(body, user) {
   if (!body.supplier_id) throw bad('required', { field: 'supplier_id' });
-  const items = (Array.isArray(body.items) ? body.items : []).filter((i) => i.part_id && num(i.qty) > 0);
+  const items = purchaseLines(body);
   if (!items.length) throw bad('purchase_empty');
   const isReturn = body.is_return ? 1 : 0;
   return tx(() => {
+    for (const it of items) ensurePart(it, body.supplier_id);
     const id = Number(run('INSERT INTO purchases(supplier_id,date,supplier_invoice_no,discount,tax,is_return,notes) VALUES(?,?,?,?,?,?,?)',
       body.supplier_id, body.date || today(), body.supplier_invoice_no || null, r2(body.discount), r2(body.tax), isReturn, body.notes || null).lastInsertRowid);
     setNo('purchases', isReturn ? 'PR' : 'PO', id);
@@ -848,11 +910,12 @@ function createPurchase(body, user) {
 function editPurchase(id, body, user) {
   const p = get('SELECT * FROM purchases WHERE id=?', id);
   if (!p) throw new HttpError(404, 'not_found');
-  const items = (Array.isArray(body.items) ? body.items : []).filter((i) => i.part_id && num(i.qty) > 0);
+  const items = purchaseLines(body);
   if (!items.length) throw bad('purchase_empty');
   const sign = p.is_return ? -1 : 1; // a purchase adds stock, a return takes it out
   const allowNeg = getSetting('allow_negative_stock', '0') === '1';
   return tx(() => {
+    for (const it of items) ensurePart(it, p.supplier_id);
     const old = all('SELECT * FROM purchase_items WHERE purchase_id=?', id);
     const sumBy = (rows, pid, f) => rows.filter((r) => String(r.part_id) === String(pid)).reduce((s, r) => s + f(r), 0);
     const pids = [...new Set([...old, ...items].map((r) => String(r.part_id)))];
@@ -1398,6 +1461,7 @@ route('POST', '/api/invoices/:id/discount', MGMT, ({ params, body, user }) => {
   audit(user, 'discount', 'invoices', inv.id, body);
   return invoiceFull(inv.id, user);
 });
+route('PUT', '/api/invoices/:id/full', MONEY, ({ params, body, user }) => editInvoice(Number(params.id), body, user));
 route('DELETE', '/api/invoices/:id', MGMT, ({ params, user }) => { deleteInvoice(Number(params.id), user); return { ok: true }; });
 route('POST', '/api/invoices/:id/cancel', MGMT, ({ params, user }) => { cancelInvoice(Number(params.id), user); return invoiceFull(params.id, user); });
 

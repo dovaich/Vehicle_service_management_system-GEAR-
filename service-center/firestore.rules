@@ -39,7 +39,7 @@ service cloud.firestore {
     match /work_orders/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
     match /reminders/{id} { allow read, create, update: if active(); allow delete: if hasRole(FRONT()); }
     match /attachments/{id} { allow read, create, delete: if active(); }
-    match /parts/{id} { allow read, update: if active(); allow create: if hasRole(['admin', 'manager', 'storekeeper']); allow delete: if hasRole(MGMT()); }
+    match /parts/{id} { allow read, update: if active(); allow create: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
     match /stock_moves/{id} { allow read: if hasRole(SUPP()); allow create: if active(); }
     match /employees/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
     match /service_types/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
@@ -57,6 +57,8 @@ service cloud.firestore {
       allow read: if hasRole(MONEY()) || (hasRole(['advisor']) && resource.data.ref_type == 'invoice');
       allow create: if hasRole(MONEY()) || (hasRole(['advisor']) && request.resource.data.ref_type == 'invoice');
       allow delete: if hasRole(MONEY());
+      // only re-pointing a payment to another customer when an invoice is edited
+      allow update: if hasRole(MONEY()) && onlyChanges(['party_id', 'party_name']);
     }
     match /bonuses/{id} { allow read, write: if hasRole(MONEY()); }
 

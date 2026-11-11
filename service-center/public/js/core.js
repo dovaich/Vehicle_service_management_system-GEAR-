@@ -368,6 +368,38 @@
     key: 'actions', cls: 'actions-col', render: () => `${canEdit ? `<button class="icon-btn" data-edit title="${t('edit')}">✎</button>` : ''}${canDelete ? `<button class="icon-btn danger" data-delete title="${t('delete')}">🗑</button>` : ''}`,
   } : null);
 
+  // ---------------- drafts: unsaved forms survive leaving the page (kept on this device, per user) ----------------
+  G.draft = (key) => {
+    const k = () => `gear_draft_${G.user ? G.user.id : 'x'}_${key}`;
+    return {
+      load: () => { try { const v = JSON.parse(localStorage.getItem(k()) || 'null'); return v && v.data ? v : null; } catch (_) { return null; } },
+      save: (data) => { try { localStorage.setItem(k(), JSON.stringify({ at: new Date().toISOString(), data })); } catch (_) { /* storage full / blocked */ } },
+      clear: () => { try { localStorage.removeItem(k()); } catch (_) { /* ignore */ } },
+    };
+  };
+  // capture / restore every named field of a form, including lookups (id + shown text)
+  G.formState = (form) => {
+    const st = {};
+    form.querySelectorAll('[name]').forEach((el) => {
+      if (el.closest('.lookup') && el.type !== 'hidden') return;
+      if (el.type === 'radio') { if (el.checked) st[el.name] = el.value; } else if (el.type === 'checkbox') st[el.name] = el.checked; else st[el.name] = el.value;
+    });
+    form.querySelectorAll('.lookup').forEach((lk) => { const h = lk.querySelector('input[type=hidden]'); st['__lk_' + h.name] = lk.querySelector('input[type=search]').value; });
+    return st;
+  };
+  G.restoreForm = (form, st) => {
+    Object.entries(st || {}).forEach(([n, v]) => {
+      if (n.startsWith('__lk_')) { const h = form.querySelector(`.lookup input[type=hidden][name="${n.slice(5)}"]`); if (h) h.closest('.lookup').querySelector('input[type=search]').value = v; return; }
+      form.querySelectorAll(`[name="${n}"]`).forEach((el) => {
+        if (el.type === 'radio') el.checked = el.value === v; else if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? '';
+      });
+    });
+  };
+  G.draftBanner = (box, at, onClear) => {
+    box.innerHTML = `<div class="alert draft-bar">${t('draft_restored')} <small>(${G.fdt(at.replace('T', ' '))})</small> <button type="button" class="btn btn-sm" data-dclear>🗑 ${t('draft_clear')}</button></div>`;
+    box.querySelector('[data-dclear]').onclick = onClear;
+  };
+
   // ---------------- tabs ----------------
   G.tabs = (root, tabs, onChange, initial) => {
     const key = initial || tabs[0][0];
@@ -473,7 +505,13 @@
     if (!G.user) return;
     const hash = (location.hash || '#/').slice(1).split('?')[0] || '/';
     const query = Object.fromEntries(new URLSearchParams((location.hash.split('?')[1]) || ''));
-    const view = document.getElementById('view');
+    // every navigation renders into its own fresh container: a page that is still loading when the user
+    // moves on finishes into a detached element instead of drawing over the new page
+    const host = document.getElementById('view');
+    if (!host) return;
+    const view = document.createElement('div');
+    view.className = 'view-page';
+    host.replaceChildren(view);
     document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', hash === a.getAttribute('href').slice(1) || (a.getAttribute('href') !== '#/' && hash.startsWith(a.getAttribute('href').slice(1) + '/'))));
     document.body.classList.remove('nav-open');
     for (const r of G.routes) {
@@ -484,7 +522,10 @@
         r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
         view.innerHTML = `<div class="loading">${t('loading')}</div>`;
         window.scrollTo(0, 0);
-        try { await r.handler(view, params, query); } catch (e) { G.fail(e); view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+        try { await r.handler(view, params, query); } catch (e) {
+          if (!view.isConnected) return; // the user already left this page
+          G.fail(e); view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+        }
         return;
       }
     }

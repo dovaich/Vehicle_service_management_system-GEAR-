@@ -54,7 +54,9 @@ function init() {
   function keywords(...vals) {
     const set = new Set();
     for (const v of vals) {
-      for (const tok of norm(v).split(/[\s,.\-_/|()]+/).filter(Boolean)) {
+      // words split on punctuation ("oil", "5w30") and whole codes ("oil-5w30") are both searchable
+      const n = norm(v);
+      for (const tok of [...n.split(/[\s,.\-_/|()]+/), ...n.split(/\s+/)].filter(Boolean)) {
         const w = tok.slice(0, 24);
         for (let i = 1; i <= w.length; i++) set.add(w.slice(0, i));
       }
@@ -729,6 +731,68 @@ function init() {
 
   // delete an invoice completely: payments leave the cash accounts, counter-sale parts go back to stock,
   // a work-order invoice frees its work order
+  // edit a customer invoice after it was saved: lines, customer, car, discount, tax, date, notes.
+  // stock follows the difference in parts; payments stay (the new total cannot go below what was paid)
+  async function editInvoice(id, body) {
+    const inv = await mustRow('invoices', id);
+    if (inv.status === 'cancelled') throw bad('invoice_cancelled');
+    const src = (Array.isArray(body.items) ? body.items : []).filter((i) => i.description || i.part_id || i.service_type_id);
+    if (!src.length) throw bad('invoice_empty');
+    const sts = await serviceTypes();
+    const old = inv.items || [];
+    const items = [];
+    for (const it of src) {
+      const qty = num(it.qty, 1);
+      if (it.part_id) {
+        const p = await mustRow('parts', it.part_id);
+        const was = old.find((o) => String(o.part_id) === String(p.id));
+        items.push({ kind: 'part', description: it.description || [p.part_no, p.name_en, p.name_ar].filter(Boolean).join(' - '), qty, unit_price: r2(it.unit_price), unit_cost: was ? num(was.unit_cost) : num(p.cost), amount: r2(qty * num(it.unit_price)), part_id: p.id, technician_id: it.technician_id ? String(it.technician_id) : null });
+      } else {
+        const st = it.service_type_id ? sts.find((x) => x.id === String(it.service_type_id)) : null;
+        const kind = it.kind === 'labor' || st ? 'labor' : it.kind || 'other';
+        items.push({ kind, description: it.description || (st ? `${st.name_ar} / ${st.name_en}` : ''), qty, unit_price: r2(it.unit_price), unit_cost: 0, amount: r2(qty * num(it.unit_price)), part_id: null, technician_id: it.technician_id ? String(it.technician_id) : null });
+      }
+    }
+    const tr = body.tax_rate !== undefined && body.tax_rate !== '' && body.tax_rate !== null ? num(body.tax_rate) : inv.tax_rate;
+    const tt = totals(items, body.discount ?? inv.discount, tr);
+    if (num(inv.paid) > tt.total + 0.009) throw bad('total_below_paid', { due: r2(inv.paid) });
+    // stock check before changing anything
+    const qtyBy = (rows, pid) => rows.filter((r) => String(r.part_id) === String(pid)).reduce((sm, r) => sm + num(r.qty, 1), 0);
+    const pids = [...new Set([...old, ...items].filter((r) => r.part_id).map((r) => String(r.part_id)))];
+    const allowNeg = String(await getSetting('allow_negative_stock', '0')) === '1';
+    for (const pid of pids) {
+      const d = r2(qtyBy(items, pid) - qtyBy(old, pid));
+      const part = await getRow('parts', pid);
+      if (d > 0 && part && num(part.qty) < d && !allowNeg) throw bad('insufficient_stock', { part: part.name_en, available: part.qty });
+    }
+    const customerId = body.customer_id || (body.customer && (body.customer.name || body.customer.phone)) ? await resolveCustomer(body) : inv.customer_id;
+    const vehicleId = body.vehicle_id || (body.vehicle && (body.vehicle.plate || body.vehicle.model)) ? await resolveVehicle(body, customerId) : (customerId === inv.customer_id ? inv.vehicle_id : null);
+    for (const pid of pids) {
+      const d = r2(qtyBy(items, pid) - qtyBy(old, pid));
+      if (d > 0) await stockMove(pid, 'out', d, null, 'invoice', id, `Edited ${inv.no}`);
+      if (d < 0) await stockMove(pid, 'return', -d, null, 'invoice', id, `Edited ${inv.no}`);
+    }
+    const c = await mustRow('customers', customerId);
+    const v = vehicleId ? await getRow('vehicles', vehicleId) : null;
+    const status = invStatus(tt.total, num(inv.paid));
+    const d = clean({ items, ...tt, customer_id: c.id, customer_name: c.name, customer_phone: c.phone, vehicle_id: v ? v.id : null, plate: v ? v.plate : null, model: v ? v.model : null, series: v ? v.series : null,
+      date: body.date || inv.date, notes: body.notes !== undefined ? body.notes || null : inv.notes || null, status, open: ['unpaid', 'partial'].includes(status), total_eff: tt.total });
+    d.vehicle_id = v ? v.id : null; d.plate = v ? v.plate : null;
+    d.kw = keywords(inv.no, c.name, c.phone, d.plate, inv.work_order_no);
+    const b = F.writeBatch(db);
+    b.update(ref('invoices', id), d);
+    const paid = num(inv.paid);
+    if (c.id === inv.customer_id) b.update(ref('customers', c.id), { balance: inc(r2(tt.total - inv.total)) });
+    else {
+      b.update(ref('customers', inv.customer_id), { balance: inc(-r2(inv.total - paid)) });
+      b.update(ref('customers', c.id), { balance: inc(r2(tt.total - paid)) });
+      for (const t of await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))) b.update(ref('transactions', t.id), { party_id: c.id, party_name: c.name });
+    }
+    if (inv.work_order_id) b.update(ref('work_orders', inv.work_order_id), { invoice_status: status });
+    await b.commit();
+    await audit('edit', 'invoices', id, { old_total: inv.total, total: tt.total });
+    return invoiceFull(id);
+  }
   async function deleteInvoice(id) {
     const inv = await mustRow('invoices', id);
     for (const t of await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))) await removeTx(t);
@@ -745,11 +809,26 @@ function init() {
   }
 
   // ------------------------------------------------------------------ purchases
+  // a purchase line can name a part that is not in stock yet: it is registered automatically
+  // (or matched to an existing part with the same code / name)
+  async function ensurePart(it, supplierId) {
+    if (it.part_id) return;
+    const name = String(it.new_name || '').trim(); const code = String(it.new_part_no || '').trim();
+    if (!name && !code) throw bad('required', { field: 'part' });
+    let ex = null;
+    if (code) ex = (await all('parts', W('part_no', '==', code), L(1)))[0] || (await all('parts', W('oem_no', '==', code), L(1)))[0];
+    if (!ex && name) ex = (await all('parts', W('name_en', '==', name), L(1)))[0] || (await all('parts', W('name_ar', '==', name), L(1)))[0];
+    if (ex) { it.part_id = ex.id; return; }
+    const p = await createResource('parts', { part_no: code || null, name_en: name || code, name_ar: /[\u0600-\u06FF]/.test(name) ? name : null, price: r2(it.price), cost: 0, qty: 0, min_qty: 0, supplier_id: supplierId || null, notes: 'Added from a purchase invoice' });
+    it.part_id = p.id;
+  }
+  const purchaseLines = (body) => (Array.isArray(body.items) ? body.items : []).filter((i) => (i.part_id || i.new_name || i.new_part_no) && num(i.qty) > 0);
   async function createPurchase(body) {
     if (!body.supplier_id) throw bad('required', { field: 'supplier_id' });
-    const src = (Array.isArray(body.items) ? body.items : []).filter((i) => i.part_id && num(i.qty) > 0);
+    const src = purchaseLines(body);
     if (!src.length) throw bad('purchase_empty');
     const s = await mustRow('suppliers', body.supplier_id);
+    for (const it of src) await ensurePart(it, s.id);
     const isReturn = body.is_return ? 1 : 0;
     const items = [];
     for (const it of src) {
@@ -793,8 +872,9 @@ function init() {
   // edit a supplier invoice: stock and average cost follow the difference, supplier balance the new total
   async function editPurchase(id, body) {
     const p = await mustRow('purchases', id);
-    const src = (Array.isArray(body.items) ? body.items : []).filter((i) => i.part_id && num(i.qty) > 0);
+    const src = purchaseLines(body);
     if (!src.length) throw bad('purchase_empty');
+    for (const it of src) await ensurePart(it, p.supplier_id);
     const sign = p.is_return ? -1 : 1;
     const allowNeg = String(await getSetting('allow_negative_stock', '0')) === '1';
     const items = [];
@@ -1125,6 +1205,20 @@ function init() {
     },
   };
 
+  // one-time: rebuild the parts search keywords so whole codes like "OIL-5W30" are searchable (admin, once)
+  async function reindexParts() {
+    if (!me || me.role !== 'admin') return;
+    const st = await settings(true);
+    if (st.kw_version === '2') return;
+    const rows = await all('parts');
+    for (let i = 0; i < rows.length; i += 400) {
+      const b = F.writeBatch(db);
+      for (const r of rows.slice(i, i + 400)) b.update(ref('parts', r.id), { kw: keywords(...RES.parts.kw(r)) });
+      await b.commit();
+    }
+    await F.setDoc(ref('settings', 'main'), { kw_version: '2' }, { merge: true });
+  }
+
   // ------------------------------------------------------------------ router
   const routes = [];
   const route = (method, pattern, roles, handler) => {
@@ -1148,6 +1242,7 @@ function init() {
     if (!me) { await F.signOut(auth); throw new ApiError(401, 'invalid_credentials'); }
     cache.settings = null; cache.emps = null; cache.st = null;
     await audit('login', 'users', me.id);
+    reindexParts().catch((e) => console.warn('reindex', e));
     return { user: publicMe(), mustChange: false };
   });
   route('POST', '/api/auth/logout', ANY, async () => { await F.signOut(auth); me = null; return { ok: true }; });
@@ -1316,6 +1411,7 @@ function init() {
     await audit('discount', 'invoices', inv.id, body);
     return invoiceFull(inv.id);
   });
+  route('PUT', '/api/invoices/:id/full', MONEY, ({ params, body }) => editInvoice(params.id, body));
   route('DELETE', '/api/invoices/:id', MGMT, async ({ params }) => { await deleteInvoice(params.id); return { ok: true }; });
   route('POST', '/api/invoices/:id/cancel', MGMT, async ({ params }) => { await cancelInvoice(params.id); return invoiceFull(params.id); });
 

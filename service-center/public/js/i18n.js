@@ -218,6 +218,10 @@ window.I18N = {
   search_customer: ['ابحث بالاسم أو التليفون...', 'Search name or phone...'], other_customer: ['عميل تاني', 'Other customer'], existing_vehicle: ['سيارة مسجلة', 'Existing vehicle'],
   quick_customer_help: ['اختار عميل مسجل، أو اكتب اسم وتليفون عميل جديد وهيتسجل لوحده (لو التليفون متسجل هيستخدم نفس العميل). لو سبتها فاضية الفاتورة تتسجل على "عميل نقدي".', 'Pick a customer, or type a new name / phone and it is registered automatically (an existing phone reuses that customer). Leave empty for the cash customer.'],
   pay_full: ['دفع كامل', 'Pay in full'], save_print: ['حفظ وطباعة', 'Save & print'],
+  err_total_below_paid: ['إجمالي الفاتورة بعد التعديل أقل من المدفوع - اعمل استرداد الأول', 'The new total is below what was paid - refund first'],
+  edit_invoice: ['تعديل الفاتورة', 'Edit invoice'], draft_restored: ['📝 رجّعنا المسودة اللي ماتحفظتش', '📝 Unsaved draft restored'], draft_clear: ['مسح المسودة', 'Discard draft'],
+  new_part_line: ['قطعة جديدة - هتتسجل في المخزن لوحدها', 'New part - will be added to stock automatically'], new_part_code: ['كود القطعة (للقطع الجديدة - اختياري)', 'Part code (new parts, optional)'],
+  part_or_new: ['القطعة (اختار، أو اكتب اسم قطعة جديدة)', 'Part (pick, or type a new part name)'],
   // errors
   err_unauthorized: ['برجاء تسجيل الدخول', 'Please sign in'], err_forbidden: ['ليس لديك صلاحية', 'You do not have permission'], err_not_found: ['غير موجود', 'Not found'],
   err_invalid_credentials: ['اسم المستخدم أو كلمة المرور غير صحيحة', 'Invalid username or password'], err_too_many_attempts: ['محاولات كثيرة، حاول لاحقاً', 'Too many attempts, try later'],

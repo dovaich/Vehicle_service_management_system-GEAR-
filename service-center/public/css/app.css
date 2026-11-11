@@ -141,6 +141,8 @@ a.kpi:hover { border-color: var(--primary); }
 .b-completed, .b-done, .b-paid, .b-approved, .b-arrived, .b-bonus, .b-in, .b-return { background: #dcf5e6; color: #146c3c; }
 .b-delivered { background: #d7ecff; color: #0b4f8a; }
 .b-advance { background: #ffe6cc; color: #a34b00; }
+.b-new { background: #e3eefc; color: #1553a8; }
+.draft-bar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .b-present { background: #dcf5e6; color: #146c3c; } .b-absent { background: #fde2e2; color: #a12020; }
 .b-leave, .b-sick, .b-holiday { background: #e3eefc; color: #1553a8; } .b-unpaid { background: #ffe6cc; color: #a34b00; }
 .punch { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; border-inline-start: 4px solid var(--ok); }

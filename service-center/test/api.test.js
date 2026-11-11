@@ -424,6 +424,42 @@ test('full service-center flow', async () => {
   await call('POST', '/api/invoices', { customer: { name: 'Ghost', phone: '0100000' }, items: [{ part_id: qPart.id, qty: 99, unit_price: 100 }] }, { expect: 400 });
   assert.equal(await custCount(), n0 + 2);
 
+  // ---- purchase with a part typed in (not in stock yet) -> registered automatically
+  const np1 = await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ new_name: 'فلتر ديزل جديد', new_part_no: 'NEW-777', qty: 4, unit_cost: 150, price: 260 }] });
+  const newPart = (await call('GET', '/api/parts?q=NEW-777')).rows[0];
+  assert.ok(newPart, 'part created'); assert.equal(newPart.qty, 4); assert.equal(newPart.cost, 150); assert.equal(newPart.price, 260);
+  assert.equal(newPart.name_ar, 'فلتر ديزل جديد');
+  assert.equal(np1.items[0].part_id, newPart.id);
+  // same code again -> same part, not a duplicate
+  await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ new_name: 'whatever', new_part_no: 'NEW-777', qty: 1, unit_cost: 150 }] });
+  assert.equal((await call('GET', '/api/parts?q=NEW-777')).total, 1);
+  assert.equal((await call('GET', `/api/parts/${newPart.id}`)).qty, 5);
+
+  // ---- edit a saved customer invoice: lines, customer, stock follows
+  const eiPart = await call('POST', '/api/parts', { part_no: 'EI-1', name_en: 'Edit inv part', qty: 10, cost: 30, price: 80 });
+  const ei = await call('POST', '/api/invoices', { customer: { name: 'Edit Me', phone: '01077770000' }, tax_rate: 0,
+    items: [{ part_id: eiPart.id, qty: 2, unit_price: 80 }, { kind: 'labor', description: 'Labor A', unit_price: 300, technician_id: tech.id }], payment: { amount: 100, account_id: cash.id } });
+  assert.equal((await call('GET', `/api/parts/${eiPart.id}`)).qty, 8);
+  const ei2 = await call('PUT', `/api/invoices/${ei.id}/full`, { tax_rate: 0, discount: 20,
+    items: [{ part_id: eiPart.id, qty: 5, unit_price: 80 }, { kind: 'labor', description: 'Labor A+', unit_price: 350, technician_id: tech.id }, { kind: 'other', description: 'Extra', unit_price: 50 }] });
+  assert.equal(ei2.total, 5 * 80 + 350 + 50 - 20); assert.equal(ei2.paid, 100); assert.equal(ei2.status, 'partial');
+  assert.equal((await call('GET', `/api/parts/${eiPart.id}`)).qty, 5, 'stock follows the new quantity');
+  assert.equal(ei2.no, ei.no, 'same invoice number');
+  // remove the part line -> back in stock
+  await call('PUT', `/api/invoices/${ei.id}/full`, { tax_rate: 0, items: [{ kind: 'labor', description: 'Labor A', unit_price: 300 }] });
+  assert.equal((await call('GET', `/api/parts/${eiPart.id}`)).qty, 10);
+  // move it to another (typed) customer
+  const ei3 = await call('PUT', `/api/invoices/${ei.id}/full`, { customer: { name: 'Someone Else', phone: '01066660000' }, tax_rate: 0, items: [{ kind: 'labor', description: 'Labor A', unit_price: 300 }] });
+  assert.equal(ei3.customer.name, 'Someone Else');
+  assert.equal((await call('GET', `/api/transactions?category=invoice_payment&party_id=${ei3.customer_id}`)).rows.length, 1, 'payment moved with the invoice');
+  // below what was paid -> refused, nothing changed
+  await call('PUT', `/api/invoices/${ei.id}/full`, { tax_rate: 0, items: [{ description: 'tiny', unit_price: 10 }] }, { expect: 400 });
+  assert.equal((await call('GET', `/api/invoices/${ei.id}`)).total, 280, 'unchanged (the 20 discount stays)');
+  // only managers / accountants edit
+  await call('POST', '/api/auth/login', { username: 'tech1', password: 'secret1' });
+  await call('PUT', `/api/invoices/${ei.id}/full`, { items: [{ description: 'x', unit_price: 999 }] }, { expect: 403 });
+  cookie = adminCookie;
+
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   const att = await call('POST', '/api/attachments', { ref_type: 'reception', ref_id: rec.id, mime: 'image/png', data: png });

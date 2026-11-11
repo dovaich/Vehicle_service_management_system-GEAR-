@@ -127,7 +127,9 @@
     const items = srcInv ? srcInv.items.map((i) => ({ part_id: i.part_id, label: `${i.part_no || ''} ${G.tl(i.name_ar, i.name_en)}`.trim(), qty: Number(i.qty), unit_cost: Number(i.unit_cost), price: Number(i.price) || Number(i.part_price) || 0, max: from ? Number(i.qty) : null })) : [];
     const title = edit ? `${t('edit')} ${edit.no}` : from ? `${t('purchase_return')} - ${from.no}` : isReturn ? t('purchase_return') : t('new_purchase');
     const v = edit || {};
+    const draft = G.draft(edit ? `purchase_edit_${edit.id}` : from ? `purchase_return_${from.id}` : isReturn ? 'purchase_return' : 'purchase_new');
     view.innerHTML = `<div class="page-head"><h2>🛒 ${esc(title)}</h2></div>
+      <div data-draftbar></div>
       ${edit ? `<p class="alert">${t('purchase_edit_help')}</p>` : from ? `<p class="alert">${t('return_from_help')}</p>` : ''}
       <form class="card" novalidate>
         <div class="form-grid">
@@ -137,7 +139,9 @@
         </div>
         <h3 class="mt">${t('items')}</h3>
         ${from ? '' : `<div class="add-line form-grid">
-          <div class="field span-2"><label>${t('part')}</label><div class="row-flex">${G.lookupHtml({ name: 'l_part', res: 'parts' }, '', 'lp')}<button type="button" class="btn" data-newpart>＋ ${t('new_part')}</button></div></div>
+          <div class="field span-2"><label>${isReturn ? t('part') : t('part_or_new')}</label><div class="row-flex">${G.lookupHtml({ name: 'l_part', res: 'parts' }, '', 'lp')}<button type="button" class="btn" data-newpart title="${t('new_part')}">＋</button></div>
+            <small class="help" data-newhint hidden>🆕 ${t('new_part_line')}</small></div>
+          ${isReturn ? '' : `<div data-newcode hidden>${G.field({ name: 'l_newcode', label: t('new_part_code') })}</div>`}
           ${G.field({ name: 'l_qty', label: t('qty'), type: 'number' }, 1)}${G.field({ name: 'l_cost', label: t('unit_cost'), type: 'number' })}
           ${isReturn ? '' : G.field({ name: 'l_price', label: t('sale_price'), type: 'number' })}
           <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-addline>＋ ${t('add_item')}</button></div>
@@ -180,7 +184,7 @@
     const inp = (i, f) => `<input type="number" step="any" inputmode="decimal" class="line-in" data-li="${i}" data-f="${f}" value="${esc(items[i][f])}" ${f === 'qty' && items[i].max ? `max="${items[i].max}"` : ''}>`;
     const renderLines = () => {
       view.querySelector('[data-lines]').innerHTML = G.table([
-        { key: 'label', label: t('part') },
+        { key: 'label', label: t('part'), render: (i) => `${esc(i.label)}${i.part_id ? '' : ` <span class="badge b-new">🆕 ${t('new')}</span>`}` },
         { key: 'qty', cls: 'num', render: (i) => inp(items.indexOf(i), 'qty') + (i.max ? `<br><small class="muted">${t('max_qty')}: ${G.num(i.max)}</small>` : '') },
         { key: 'unit_cost', cls: 'num', render: (i) => inp(items.indexOf(i), 'unit_cost') },
         ...(isReturn ? [] : [{ key: 'price', label: t('sale_price'), cls: 'num', render: (i) => inp(items.indexOf(i), 'price') }]),
@@ -193,15 +197,42 @@
     form.querySelectorAll('[name=discount],[name=tax]').forEach((i) => i.oninput = calc);
     const al = view.querySelector('[data-addline]');
     if (al) al.onclick = () => {
-      if (!picked || !partBox.querySelector('input[type=hidden]').value) { G.toast(t('err_required') + ': ' + t('part'), 'err'); return; }
+      const typed = partBox.querySelector('input[type=search]').value.trim();
+      const isPicked = picked && partBox.querySelector('input[type=hidden]').value;
+      // not in stock yet: the typed name becomes a new part when the invoice is saved (purchases only)
+      if (!isPicked && (!typed || isReturn)) { G.toast(t('err_required') + ': ' + t('part'), 'err'); return; }
       const qty = Number(form.querySelector('[name=l_qty]').value) || 0;
       if (qty <= 0) { G.toast(t('err_invalid_qty'), 'err'); return; }
       const lp = form.querySelector('[name=l_price]');
-      items.push({ part_id: picked.id, label: `${picked.part_no || ''} ${G.tl(picked.name_ar, picked.name_en)}`, qty, unit_cost: Number(form.querySelector('[name=l_cost]').value) || 0, price: lp ? Number(lp.value) || 0 : 0 });
-      picked = null; partBox.querySelector('input[type=hidden]').value = ''; partBox.querySelector('input[type=search]').value = '';
+      const lc = form.querySelector('[name=l_newcode]');
+      const line = { qty, unit_cost: Number(form.querySelector('[name=l_cost]').value) || 0, price: lp ? Number(lp.value) || 0 : 0 };
+      if (isPicked) items.push({ ...line, part_id: picked.id, label: `${picked.part_no || ''} ${G.tl(picked.name_ar, picked.name_en)}` });
+      else items.push({ ...line, part_id: null, new_name: typed, new_part_no: lc ? lc.value.trim() : '', label: `${lc && lc.value.trim() ? lc.value.trim() + ' ' : ''}${typed}` });
+      if (lc) lc.value = '';
+      picked = null; partBox.querySelector('input[type=hidden]').value = ''; partBox.querySelector('input[type=search]').value = ''; syncNew();
       form.querySelector('[name=l_qty]').value = 1; form.querySelector('[name=l_cost]').value = ''; if (lp) lp.value = '';
       renderLines();
     };
+    // typing a name that is not picked from the list = a new part
+    const nh = view.querySelector('[data-newhint]'); const nc = view.querySelector('[data-newcode]');
+    function syncNew() {
+      if (!partBox || isReturn) return;
+      const isNew = partBox.querySelector('input[type=search]').value.trim() && !partBox.querySelector('input[type=hidden]').value;
+      if (nh) nh.hidden = !isNew; if (nc) nc.hidden = !isNew;
+    }
+    if (partBox) { partBox.querySelector('input[type=search]').addEventListener('input', syncNew); partBox.addEventListener('pick', syncNew); }
+    // ---- draft: kept on this device until saved
+    let dTimer;
+    const saveDraft = () => { clearTimeout(dTimer); dTimer = setTimeout(() => draft.save({ form: G.formState(form), items }), 250); };
+    const saved = draft.load();
+    if (saved) {
+      G.restoreForm(form, saved.data.form);
+      items.splice(0, items.length, ...(saved.data.items || []));
+      G.draftBanner(view.querySelector('[data-draftbar]'), saved.at, () => { draft.clear(); G.route(); });
+    }
+    form.addEventListener('input', saveDraft); form.addEventListener('change', saveDraft); form.addEventListener('pick', saveDraft);
+    if (al) al.addEventListener('click', saveDraft);
+    view.querySelector('[data-lines]').addEventListener('click', (e) => { if (e.target.closest('[data-rm]')) setTimeout(saveDraft, 0); });
     renderLines();
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -216,6 +247,7 @@
       const btn = form.querySelector('[type=submit]'); btn.disabled = true;
       try {
         const r = edit ? await G.put(`/api/purchases/${edit.id}`, body) : await G.post('/api/purchases', body);
+        clearTimeout(dTimer); draft.clear();
         G.toast(t('saved')); location.hash = `#/purchases/${r.id}`;
       } catch (err) { G.fail(err); btn.disabled = false; }
     };
