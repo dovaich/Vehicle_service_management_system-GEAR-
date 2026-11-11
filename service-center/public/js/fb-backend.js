@@ -633,20 +633,68 @@ function init() {
     await audit('create', 'invoices', id, { from_wo: woId });
     return invoiceFull(id);
   }
+  // Quick invoice customer: picked, existing with the same phone, new from the typed name / phone, or the cash customer
+  const CASH_CUSTOMER = 'عميل نقدي / Cash customer';
+  async function resolveCustomer(body) {
+    if (body.customer_id) return (await mustRow('customers', body.customer_id)).id;
+    const c = body.customer || {};
+    const name = String(c.name || '').trim(); const phone = String(c.phone || '').trim();
+    if (phone) {
+      const ex = (await all('customers', W('phone', '==', phone), L(1)))[0] || (await all('customers', W('phone2', '==', phone), L(1)))[0];
+      if (ex) return ex.id;
+    }
+    if (name || phone) {
+      return (await createResource('customers', { name: name || phone, phone: phone || null, email: c.email || null, address: c.address || null, tax_no: c.tax_no || null, type: c.tax_no ? 'company' : 'individual', notes: 'Created from a quick invoice' })).id;
+    }
+    const cash = (await all('customers', W('is_cash', '==', true), L(1)))[0];
+    if (cash) return cash.id;
+    const nc = await createResource('customers', { name: CASH_CUSTOMER, type: 'individual', notes: 'Walk-in / cash sales' });
+    await F.updateDoc(ref('customers', nc.id), { is_cash: true });
+    return nc.id;
+  }
+  // Quick invoice vehicle (optional): picked, the customer's car with the same plate, or a new one
+  async function resolveVehicle(body, customerId) {
+    const v = body.vehicle || {};
+    const km = num(v.mileage ?? body.mileage);
+    let id = body.vehicle_id || null;
+    const plate = String(v.plate || '').trim();
+    const flat = (x) => String(x || '').replace(/\s+/g, '');
+    if (!id && plate) { const ex = (await all('vehicles', W('customer_id', '==', customerId))).find((x) => flat(x.plate) === flat(plate)); if (ex) id = ex.id; }
+    if (!id && (plate || v.vin || v.model)) {
+      id = (await createResource('vehicles', { customer_id: customerId, plate: plate || null, vin: v.vin || null, make: v.make || 'BMW', series: v.series || null, model: v.model || null, year: v.year || null, mileage: km || 0 })).id;
+    }
+    if (id && km > 0) await bumpMileage(id, km);
+    return id;
+  }
   async function manualInvoice(body) {
-    if (!body.customer_id) throw bad('required', { field: 'customer_id' });
-    const src = (Array.isArray(body.items) ? body.items : []).filter((i) => i.description || i.part_id);
+    const src = (Array.isArray(body.items) ? body.items : []).filter((i) => i.description || i.part_id || i.service_type_id);
     if (!src.length) throw bad('invoice_empty');
+    const sts = await serviceTypes();
+    const services = [];
     const items = [];
     for (const it of src) {
       const qty = num(it.qty, 1);
+      if (it.service_type_id && !it.part_id) {
+        const st = sts.find((x) => x.id === String(it.service_type_id));
+        if (st) services.push(st.id);
+        items.push({ kind: 'labor', description: it.description || (st ? `${st.name_ar} / ${st.name_en}` : ''), qty, unit_price: r2(it.unit_price), unit_cost: 0, amount: r2(qty * num(it.unit_price)), part_id: null, technician_id: it.technician_id ? String(it.technician_id) : null });
+        continue;
+      }
       if (it.part_id) {
         const p = await mustRow('parts', it.part_id);
         items.push({ kind: 'part', description: it.description || [p.part_no, p.name_en, p.name_ar].filter(Boolean).join(' - '), qty, unit_price: r2(it.unit_price), unit_cost: p.cost || 0, amount: r2(qty * num(it.unit_price)), part_id: p.id, technician_id: it.technician_id || null });
       } else items.push({ kind: it.kind || 'other', description: it.description, qty, unit_price: r2(it.unit_price), unit_cost: 0, amount: r2(qty * num(it.unit_price)), part_id: null, technician_id: it.technician_id || null });
     }
+    // stock first (it can refuse), then the customer / vehicle, so a refusal never leaves a stray customer
+    for (const it of items) if (it.part_id) {
+      const p = await mustRow('parts', it.part_id);
+      if (num(p.qty) < it.qty && String(await getSetting('allow_negative_stock', '0')) !== '1') throw bad('insufficient_stock', { part: p.name_en, available: p.qty });
+    }
+    const customerId = await resolveCustomer(body);
+    const vehicleId = await resolveVehicle(body, customerId);
     for (const it of items) if (it.part_id) await stockMove(it.part_id, 'out', it.qty, it.unit_cost, 'invoice', null, 'Counter sale');
-    const id = await createInvoice({ customer_id: body.customer_id, vehicle_id: body.vehicle_id, date: body.date, discount: body.discount, tax_rate: body.tax_rate, notes: body.notes, items });
+    const id = await createInvoice({ customer_id: customerId, vehicle_id: vehicleId, date: body.date, discount: body.discount, tax_rate: body.tax_rate, notes: body.notes, items });
+    if (vehicleId && services.length) await generateReminders({ id: null, vehicle_id: vehicleId, mileage: num((body.vehicle || {}).mileage ?? body.mileage), labor: [...new Set(services)].map((sid) => ({ service_type_id: sid })) });
     if (body.payment && num(body.payment.amount) > 0) await addInvoicePayment(id, body.payment);
     await audit('create', 'invoices', id, { manual: true });
     return invoiceFull(id);

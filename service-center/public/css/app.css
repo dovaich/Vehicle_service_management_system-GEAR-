@@ -171,6 +171,8 @@ a.kpi:hover { border-color: var(--primary); }
 .actions-wide .btn { margin: 1px; }
 .more-wrap { text-align: center; margin: 1rem 0; }
 .line-in { width: 6.5rem; min-height: 34px; padding: .25em .4em; text-align: end; }
+.line-in.wide { width: 100%; min-width: 9rem; text-align: start; }
+.qi-picked { padding: .6rem .8rem; background: var(--bg); border-radius: 8px; }
 
 /* ---------- forms ---------- */
 input, select, textarea { font: inherit; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 8px; padding: .5em .7em; width: 100%; min-height: 40px; }

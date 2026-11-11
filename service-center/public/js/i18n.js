@@ -59,7 +59,7 @@ window.I18N = {
   revenue_today: ['مبيعات اليوم', 'Sales today'], revenue_month: ['مبيعات الشهر', 'Sales this month'], collected_today: ['تحصيل اليوم', 'Collected today'],
   receivables: ['مستحقات على العملاء', 'Receivables'], cash_balance: ['رصيد الخزائن', 'Cash balance'], expenses_month: ['مصروفات الشهر', 'Expenses this month'],
   active_orders: ['أوامر الشغل الجارية', 'Active work orders'], appointments_today: ['مواعيد اليوم', "Today's appointments"], last_14_days: ['المبيعات آخر 14 يوم', 'Sales - last 14 days'],
-  new_reception: ['استلام سيارة جديدة', 'New check-in'], new_customer: ['عميل جديد', 'New customer'], new_appointment: ['موعد جديد', 'New appointment'], counter_sale: ['بيع قطع (كاونتر)', 'Counter sale'],
+  new_reception: ['استلام سيارة جديدة', 'New check-in'], new_customer: ['عميل جديد', 'New customer'], new_appointment: ['موعد جديد', 'New appointment'], counter_sale: ['فاتورة سريعة', 'Quick invoice'],
   // customers / vehicles
   customer: ['العميل', 'Customer'], vehicle: ['السيارة', 'Vehicle'], customer_type: ['نوع العميل', 'Customer type'], individual: ['فرد', 'Individual'], company: ['شركة', 'Company'],
   tax_no: ['الرقم الضريبي', 'Tax no.'], vehicles_count: ['عدد السيارات', 'Vehicles'], add_vehicle: ['إضافة سيارة', 'Add vehicle'], new_vehicle: ['سيارة جديدة', 'New vehicle'],
@@ -214,6 +214,10 @@ window.I18N = {
   return_from_help: ['عدّل الكميات اللي هترجع للمورد (أو احذف الأصناف اللي مش راجعة). الكميات هتتخصم من المخزن ورصيد المورد هيقل.', 'Set the quantities going back to the supplier (or remove lines). Stock and the supplier balance go down.'],
   purchase_edit_help: ['أي تعديل في الكميات أو الأسعار هيتظبط في المخزن وتكلفة القطع ورصيد المورد تلقائياً. المدفوعات بتفضل زي ما هي.', 'Changes to quantities or costs update stock, part costs and the supplier balance. Payments stay as they are.'],
   err_return_qty: ['الكمية أكبر من اللي في الفاتورة', 'Quantity exceeds the invoice'],
+  quick_invoice: ['فاتورة سريعة', 'Quick invoice'], optional: ['اختياري', 'optional'], existing_customer: ['عميل مسجل', 'Existing customer'],
+  search_customer: ['ابحث بالاسم أو التليفون...', 'Search name or phone...'], other_customer: ['عميل تاني', 'Other customer'], existing_vehicle: ['سيارة مسجلة', 'Existing vehicle'],
+  quick_customer_help: ['اختار عميل مسجل، أو اكتب اسم وتليفون عميل جديد وهيتسجل لوحده (لو التليفون متسجل هيستخدم نفس العميل). لو سبتها فاضية الفاتورة تتسجل على "عميل نقدي".', 'Pick a customer, or type a new name / phone and it is registered automatically (an existing phone reuses that customer). Leave empty for the cash customer.'],
+  pay_full: ['دفع كامل', 'Pay in full'], save_print: ['حفظ وطباعة', 'Save & print'],
   // errors
   err_unauthorized: ['برجاء تسجيل الدخول', 'Please sign in'], err_forbidden: ['ليس لديك صلاحية', 'You do not have permission'], err_not_found: ['غير موجود', 'Not found'],
   err_invalid_credentials: ['اسم المستخدم أو كلمة المرور غير صحيحة', 'Invalid username or password'], err_too_many_attempts: ['محاولات كثيرة، حاول لاحقاً', 'Too many attempts, try later'],

@@ -592,11 +592,16 @@ function setWoStatus(id, status, user) {
 
 function generateReminders(woId) {
   const w = get('SELECT * FROM work_orders WHERE id=?', woId);
-  const v = get('SELECT * FROM vehicles WHERE id=?', w.vehicle_id);
-  const mileage = num(w.mileage) || num(v.mileage);
+  const ids = all('SELECT DISTINCT service_type_id AS id FROM wo_labor WHERE work_order_id=? AND service_type_id IS NOT NULL', woId).map((r) => r.id);
+  addServiceReminders(w.vehicle_id, ids, num(w.mileage), woId);
+}
+// next-service reminders for the services done on a vehicle (from a work order or a quick invoice)
+function addServiceReminders(vehicleId, serviceTypeIds, mileageIn, woId) {
+  const v = get('SELECT * FROM vehicles WHERE id=?', vehicleId);
+  if (!v || !serviceTypeIds.length) return;
+  const mileage = num(mileageIn) || num(v.mileage);
   const date = today();
-  const lines = all(`SELECT DISTINCT s.* FROM wo_labor l JOIN service_types s ON s.id=l.service_type_id
-                     WHERE l.work_order_id=? AND (s.interval_km > 0 OR s.interval_months > 0)`, woId);
+  const lines = all(`SELECT * FROM service_types WHERE id IN (${serviceTypeIds.map(() => '?').join(',')}) AND (interval_km > 0 OR interval_months > 0)`, ...serviceTypeIds);
   const avg = num(getSetting('avg_km_per_month', '1500'), 1500);
   for (const s of lines) {
     // close older pending reminders for same service on this vehicle
@@ -609,7 +614,7 @@ function generateReminders(woId) {
       if (!dueDate || byKm < dueDate) dueDate = byKm;
     }
     run(`INSERT INTO reminders(vehicle_id,customer_id,service_type_id,title,due_date,due_mileage,last_service_date,last_mileage,work_order_id,status)
-         VALUES(?,?,?,?,?,?,?,?,?,'pending')`, v.id, v.customer_id, s.id, `${s.name_ar} / ${s.name_en}`, dueDate, dueMileage, date, mileage || null, woId);
+         VALUES(?,?,?,?,?,?,?,?,?,'pending')`, v.id, v.customer_id, s.id, `${s.name_ar} / ${s.name_en}`, dueDate, dueMileage, date, mileage || null, woId || null);
   }
 }
 
@@ -674,20 +679,66 @@ function invoiceFromWo(woId, body, user) {
   });
 }
 
+// Quick invoice customer: the picked one, an existing one with the same phone, a new one from the typed
+// name / phone, or (nothing typed) the shared "cash customer".
+const CASH_CUSTOMER = 'عميل نقدي / Cash customer';
+function resolveCustomer(body) {
+  if (body.customer_id) {
+    if (!get('SELECT id FROM customers WHERE id=?', body.customer_id)) throw bad('required', { field: 'customer_id' });
+    return Number(body.customer_id);
+  }
+  const c = body.customer || {};
+  const name = String(c.name || '').trim(); const phone = String(c.phone || '').trim();
+  if (phone) { const ex = get('SELECT id FROM customers WHERE phone=? OR phone2=? ORDER BY id LIMIT 1', phone, phone); if (ex) return ex.id; }
+  if (name || phone) {
+    return Number(run('INSERT INTO customers(name,phone,email,address,tax_no,type,notes) VALUES(?,?,?,?,?,?,?)', name || phone, phone || null, c.email || null, c.address || null,
+      c.tax_no || null, c.tax_no ? 'company' : 'individual', 'Created from a quick invoice').lastInsertRowid);
+  }
+  let id = num(getSetting('cash_customer_id', '0'));
+  if (!id || !get('SELECT id FROM customers WHERE id=?', id)) {
+    id = Number(run("INSERT INTO customers(name,type,notes) VALUES(?, 'individual', 'Walk-in / cash sales')", CASH_CUSTOMER).lastInsertRowid);
+    D.setSetting('cash_customer_id', id);
+  }
+  return id;
+}
+// Quick invoice vehicle (optional): the picked one, the customer's car with the same plate, or a new one
+function resolveVehicle(body, customerId) {
+  const v = body.vehicle || {};
+  const km = num(v.mileage ?? body.mileage);
+  let id = body.vehicle_id ? Number(body.vehicle_id) : null;
+  const plate = String(v.plate || '').trim();
+  if (!id && plate) {
+    const ex = get("SELECT id FROM vehicles WHERE customer_id=? AND REPLACE(COALESCE(plate,''),' ','')=REPLACE(?,' ','') LIMIT 1", customerId, plate);
+    if (ex) id = ex.id;
+  }
+  if (!id && (plate || v.vin || v.model)) {
+    id = Number(run('INSERT INTO vehicles(customer_id,plate,vin,make,series,model,year,mileage) VALUES(?,?,?,?,?,?,?,?)', customerId, plate || null, v.vin || null,
+      v.make || 'BMW', v.series || null, v.model || null, v.year ? num(v.year) : null, km || 0).lastInsertRowid);
+  }
+  if (id && km > 0) run('UPDATE vehicles SET mileage=? WHERE id=? AND COALESCE(mileage,0) < ?', km, id, km);
+  return id;
+}
+
 function createManualInvoice(body, user) {
-  if (!body.customer_id) throw bad('required', { field: 'customer_id' });
-  const items = Array.isArray(body.items) ? body.items.filter((i) => i.description || i.part_id) : [];
+  const items = Array.isArray(body.items) ? body.items.filter((i) => i.description || i.part_id || i.service_type_id) : [];
   if (!items.length) throw bad('invoice_empty');
   return tx(() => {
-    const taxRate = body.tax_rate !== undefined && body.tax_rate !== '' ? num(body.tax_rate) : num(getSetting('vat_rate', '0'));
+    const customerId = resolveCustomer(body);
+    const vehicleId = resolveVehicle(body, customerId);
+    const taxRate = body.tax_rate !== undefined && body.tax_rate !== '' && body.tax_rate !== null ? num(body.tax_rate) : num(getSetting('vat_rate', '0'));
     const id = Number(run('INSERT INTO invoices(customer_id,vehicle_id,date,discount,tax_rate,notes) VALUES(?,?,?,?,?,?)',
-      body.customer_id, body.vehicle_id || null, body.date || today(), r2(body.discount), taxRate, body.notes || null).lastInsertRowid);
+      customerId, vehicleId || null, body.date || today(), r2(body.discount), taxRate, body.notes || null).lastInsertRowid);
     setNo('invoices', 'INV', id);
+    const services = [];
     for (const it of items) {
       const qty = num(it.qty, 1);
       let cost = 0;
       let desc = it.description;
-      let kind = it.kind || 'other';
+      let kind = it.kind === 'labor' || it.service_type_id ? 'labor' : it.kind || 'other';
+      if (it.service_type_id) {
+        const st = get('SELECT * FROM service_types WHERE id=?', it.service_type_id);
+        if (st) { desc = desc || `${st.name_ar} / ${st.name_en}`; services.push(st.id); }
+      }
       if (it.part_id) {
         const p = get('SELECT * FROM parts WHERE id=?', it.part_id);
         if (!p) throw bad('part_not_found');
@@ -700,6 +751,7 @@ function createManualInvoice(body, user) {
         id, kind, desc, qty, r2(it.unit_price), cost, r2(qty * num(it.unit_price)), it.part_id || null, it.technician_id || null);
     }
     recalcInvoice(id);
+    if (vehicleId && services.length) addServiceReminders(vehicleId, [...new Set(services)], num((body.vehicle || {}).mileage ?? body.mileage), null);
     if (body.payment && num(body.payment.amount) > 0) addInvoicePayment(id, body.payment, user);
     audit(user, 'create', 'invoices', id, { manual: true });
     return invoiceFull(id, user);

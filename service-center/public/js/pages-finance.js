@@ -35,72 +35,165 @@
     foot: (rows) => `<tr><td colspan="5" class="hide-m"></td><td class="num" data-label="${t('total')}"><b>${G.money(rows.filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.total, 0))}</b></td><td class="hide-m"></td><td class="num" data-label="${t('due')}"><b>${G.money(rows.filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.due, 0))}</b></td><td></td></tr>`,
   }), R.BILL);
 
-  // counter sale / manual invoice
+  // quick invoice: labor + parts + anything else, no work order needed; the customer and car are optional and
+  // are registered automatically from what is typed (nothing typed = the shared cash customer)
   G.addRoute('/invoices/new', async (view) => {
-    const accounts = G.can(R.MONEY.concat(['advisor'])) ? await G.loadAccounts().catch(() => []) : [];
+    const [accounts, sts] = await Promise.all([G.loadAccounts().catch(() => []), G.loadServiceTypes().catch(() => []), G.loadEmployees()]);
     const items = [];
-    view.innerHTML = `<div class="page-head"><h2>🧾 ${t('counter_sale')}</h2></div>
-      <form class="card" novalidate>
-        <div class="form-grid">
-          ${G.field({ name: 'customer_id', label: t('customer'), type: 'lookup', res: 'customers', required: true })}
-          ${G.field({ name: 'vehicle_id', label: t('vehicle'), type: 'lookup', res: 'vehicles' })}
-          ${G.field({ name: 'date', type: 'date' }, G.today())}${G.field({ name: 'notes' })}
-        </div>
-        <h3 class="mt">${t('items')}</h3>
-        <div class="add-line form-grid">
-          ${G.field({ name: 'l_part', label: t('part'), type: 'lookup', res: 'parts', span: 2 })}
-          ${G.field({ name: 'l_desc', label: t('description') + ' (' + t('k_other') + ')' })}
-          ${G.field({ name: 'l_qty', label: t('qty'), type: 'number' }, 1)}${G.field({ name: 'l_price', label: t('unit_price'), type: 'number' })}
-          <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-addline>＋ ${t('add_item')}</button></div>
-        </div>
-        <div data-lines></div>
-        <div class="form-grid mt">${G.field({ name: 'discount', type: 'number' }, 0)}${G.field({ name: 'tax_rate', type: 'number' }, G.settings.vat_rate)}
-          ${accounts.length ? `${G.field({ name: 'pay_amount', label: t('pay_now'), type: 'number' })}${G.field({ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, a.name]), noEmpty: true })}
-          ${G.field({ name: 'method', type: 'select', options: G.opt(METHODS, 'm_'), noEmpty: true }, 'cash')}` : ''}</div>
-        <div class="totals" data-totals></div>
-        <div class="form-actions"><a class="btn" href="#/invoices">${t('cancel')}</a><button class="btn btn-primary btn-lg" type="submit">💾 ${t('save')}</button></div>
+    const techs = () => G.empOptions();
+    view.innerHTML = `<div class="page-head"><h2>🧾 ${t('quick_invoice')}</h2></div>
+      <form novalidate>
+        <section class="card"><h3>👤 ${t('customer')} <small class="muted">(${t('optional')})</small></h3>
+          <div class="form-grid">
+            ${G.field({ name: 'customer_id', label: t('existing_customer'), type: 'lookup', res: 'customers', span: 2, placeholder: t('search_customer') })}
+            <div class="span-2 qi-new" data-newcust><div class="form-grid">
+              ${G.field({ name: 'c_name', label: t('name') })}${G.field({ name: 'c_phone', label: t('phone'), type: 'tel' })}
+            </div></div>
+            <div class="span-2 qi-picked" data-picked hidden></div>
+          </div>
+          <small class="help">${t('quick_customer_help')}</small>
+        </section>
+        <section class="card"><h3>🚗 ${t('vehicle')} <small class="muted">(${t('optional')})</small></h3>
+          <div class="form-grid">
+            ${G.field({ name: 'vehicle_id', label: t('existing_vehicle'), type: 'lookup', res: 'vehicles', span: 2 })}
+            <div class="span-2" data-newveh><div class="form-grid">
+              ${G.field({ name: 'v_plate', label: t('plate') })}${G.field({ name: 'v_model', label: t('model'), placeholder: '320i, X5...' })}
+            </div></div>
+            ${G.field({ name: 'v_mileage', label: t('mileage'), type: 'number' })}
+          </div>
+        </section>
+        <section class="card"><h3>🧾 ${t('items')}</h3>
+          ${G.field({ name: 'l_kind', label: '', type: 'segment', options: [['labor', '🛠 ' + t('k_labor')], ['part', '📦 ' + t('k_part')], ['other', '➕ ' + t('k_other')]] }, 'labor')}
+          <div class="add-line form-grid mt">
+            <div data-k="labor">${G.field({ name: 'l_service', label: t('service_type'), type: 'select', options: sts.map((x) => [x.id, `${x.code ? x.code + ' - ' : ''}${G.tl(x.name_ar, x.name_en)} (${G.num(x.labor_price)})`]) })}</div>
+            <div data-k="part" class="span-2" hidden>${G.field({ name: 'l_part', label: t('part'), type: 'lookup', res: 'parts' })}</div>
+            <div data-k="labor other">${G.field({ name: 'l_desc', label: t('description') })}</div>
+            <div data-k="labor">${G.field({ name: 'l_tech', label: t('technician'), type: 'select', options: techs() })}</div>
+            ${G.field({ name: 'l_qty', label: t('qty'), type: 'number' }, 1)}${G.field({ name: 'l_price', label: t('price'), type: 'number' })}
+            <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-addline>＋ ${t('add_item')}</button></div>
+          </div>
+          <div data-lines></div>
+        </section>
+        <section class="card">
+          <div class="form-grid">${G.field({ name: 'discount', type: 'number' }, 0)}${G.field({ name: 'tax_rate', type: 'number' }, G.settings.vat_rate)}
+            ${G.field({ name: 'date', type: 'date' }, G.today())}${G.field({ name: 'notes' })}</div>
+          <div class="totals mt" data-totals></div>
+          ${accounts.length ? `<h4 class="sec-title">💵 ${t('pay_now')}</h4><div class="form-grid">
+            <div class="field"><label>${t('amount')}</label><div class="row-flex"><input type="number" step="any" inputmode="decimal" name="pay_amount" style="flex:1"><button type="button" class="btn" data-full>${t('pay_full')}</button></div></div>
+            ${G.field({ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, a.name]), noEmpty: true })}
+            ${G.field({ name: 'method', type: 'select', options: G.opt(METHODS, 'm_'), noEmpty: true }, 'cash')}</div>` : ''}
+        </section>
+        <div class="form-actions"><a class="btn" href="#/invoices">${t('cancel')}</a>
+          <button class="btn btn-lg" type="button" data-saveprint>🖨 ${t('save_print')}</button>
+          <button class="btn btn-primary btn-lg" type="submit">💾 ${t('save')}</button></div>
       </form>`;
     const form = view.querySelector('form');
     G.bindLookups(form);
+    const val = (n) => form.querySelector(`[name=${n}]`);
+    // customer: pick one, or type a new one
+    const custBox = form.querySelector('.lookup[data-res=customers]');
+    const vehBox = form.querySelector('.lookup[data-res=vehicles]');
+    custBox.addEventListener('pick', (e) => {
+      const c = e.detail;
+      form.querySelector('[data-newcust]').hidden = true;
+      const pk = form.querySelector('[data-picked]');
+      pk.hidden = false;
+      pk.innerHTML = `<b>${esc(c.name)}</b> ${esc(c.phone || '')} <button type="button" class="btn btn-sm btn-ghost" data-unpick>✕ ${t('other_customer')}</button>`;
+      pk.querySelector('[data-unpick]').onclick = () => {
+        custBox.querySelector('input[type=hidden]').value = ''; custBox.querySelector('input[type=search]').value = '';
+        pk.hidden = true; form.querySelector('[data-newcust]').hidden = false; delete vehBox.dataset.filter;
+      };
+      vehBox.dataset.filter = `customer_id=${c.id}`;
+    });
+    vehBox.addEventListener('pick', (e) => {
+      const v = e.detail;
+      form.querySelector('[data-newveh]').hidden = true;
+      if (!custBox.querySelector('input[type=hidden]').value) {
+        custBox.querySelector('input[type=hidden]').value = v.customer_id;
+        custBox.querySelector('input[type=search]').value = v.customer_name || '';
+        custBox.dispatchEvent(new CustomEvent('pick', { detail: { id: v.customer_id, name: v.customer_name, phone: v.customer_phone } }));
+      }
+    });
+    vehBox.querySelector('input[type=search]').addEventListener('input', () => { form.querySelector('[data-newveh]').hidden = false; });
+    // the line being added
+    const kind = () => form.querySelector('[name=l_kind]:checked').value;
+    const syncKind = () => form.querySelectorAll('[data-k]').forEach((el) => { el.hidden = !el.dataset.k.split(' ').includes(kind()); });
+    form.querySelectorAll('[name=l_kind]').forEach((r) => r.onchange = syncKind);
+    syncKind();
     let picked = null;
-    form.querySelector('.lookup[data-res=parts]').addEventListener('pick', (e) => { picked = e.detail; form.querySelector('[name=l_price]').value = e.detail.price; });
-    form.querySelector('.lookup[data-res=customers]').addEventListener('pick', (e) => { form.querySelector('.lookup[data-res=vehicles]').dataset.filter = `customer_id=${e.detail.id}`; });
-    const calc = () => {
-      const sub = items.reduce((s, i) => s + i.qty * i.unit_price, 0);
-      const disc = Number(form.querySelector('[name=discount]').value) || 0;
-      const rate = Number(form.querySelector('[name=tax_rate]').value) || 0;
-      const tax = (sub - disc) * rate / 100;
-      view.querySelector('[data-totals]').innerHTML = `<div class="trow"><span>${t('subtotal')}</span><b>${G.money(sub)}</b></div><div class="trow"><span>${t('vat')}</span><b>${G.money(tax)}</b></div><div class="trow big"><span>${t('total')}</span><b>${G.money(sub - disc + tax)}</b></div>`;
+    form.querySelector('.lookup[data-res=parts]').addEventListener('pick', (e) => { picked = e.detail; val('l_price').value = e.detail.price || ''; });
+    val('l_service').onchange = () => {
+      const st = sts.find((x) => String(x.id) === val('l_service').value);
+      if (st) { val('l_price').value = st.labor_price; if (!val('l_desc').value) val('l_desc').placeholder = G.tl(st.name_ar, st.name_en); }
     };
+    const total = () => {
+      const sub = items.reduce((sm, i) => sm + i.qty * i.unit_price, 0);
+      const disc = Number(val('discount').value) || 0; const rate = Number(val('tax_rate').value) || 0;
+      return { sub, tax: Math.round((sub - disc) * rate) / 100, total: Math.round((sub - disc) * (1 + rate / 100) * 100) / 100 };
+    };
+    const calc = () => {
+      const x = total();
+      view.querySelector('[data-totals]').innerHTML = `<div class="trow"><span>${t('subtotal')}</span><b>${G.money(x.sub)}</b></div><div class="trow"><span>${t('vat')}</span><b>${G.money(x.tax)}</b></div><div class="trow big"><span>${t('total')}</span><b>${G.money(x.total)}</b></div>`;
+      view.querySelectorAll('[data-amt]').forEach((el) => { const i = items[el.dataset.amt]; if (i) el.textContent = G.money(i.qty * i.unit_price); });
+    };
+    const inp = (i, f, type = 'number') => `<input type="${type}" ${type === 'number' ? 'step="any" inputmode="decimal"' : ''} class="line-in ${type === 'text' ? 'wide' : ''}" data-li="${i}" data-f="${f}" value="${esc(items[i][f] ?? '')}">`;
     const renderLines = () => {
-      view.querySelector('[data-lines]').innerHTML = G.table([{ key: 'description' }, { key: 'qty', cls: 'num' }, { key: 'unit_price', cls: 'num', render: (i) => G.num(i.unit_price) }, { key: 'amount', cls: 'num', render: (i) => G.money(i.qty * i.unit_price) }, { key: 'x', label: '', render: () => '<button type="button" class="icon-btn danger" data-rm>🗑</button>' }], items);
+      view.querySelector('[data-lines]').innerHTML = G.table([
+        { key: 'kind', render: (i) => G.badge(i.kind === 'labor' ? 'k_labor' : i.kind === 'part' ? 'k_part' : 'k_other', '') },
+        { key: 'description', render: (i) => (i.part_id ? esc(i.description) : inp(items.indexOf(i), 'description', 'text')) },
+        { key: 'technician_id', label: t('technician'), render: (i) => (i.kind === 'labor' ? `<select class="line-in wide" data-li="${items.indexOf(i)}" data-f="technician_id"><option value="">-</option>${techs().map(([id, nm]) => `<option value="${id}" ${String(id) === String(i.technician_id) ? 'selected' : ''}>${esc(nm)}</option>`).join('')}</select>` : '') },
+        { key: 'qty', cls: 'num', render: (i) => inp(items.indexOf(i), 'qty') },
+        { key: 'unit_price', cls: 'num', render: (i) => inp(items.indexOf(i), 'unit_price') },
+        { key: 'amount', cls: 'num', render: (i) => `<span data-amt="${items.indexOf(i)}">${G.money(i.qty * i.unit_price)}</span>` },
+        { key: 'x', label: '', render: () => '<button type="button" class="icon-btn danger" data-rm>🗑</button>' }], items);
       view.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { items.splice(Number(b.closest('tr').dataset.i), 1); renderLines(); });
+      view.querySelectorAll('[data-li]').forEach((el) => {
+        el.oninput = el.onchange = () => { const it = items[el.dataset.li]; const f = el.dataset.f; it[f] = ['qty', 'unit_price'].includes(f) ? Number(el.value) || 0 : el.value; calc(); };
+      });
       calc();
     };
     form.querySelectorAll('[name=discount],[name=tax_rate]').forEach((i) => i.oninput = calc);
     view.querySelector('[data-addline]').onclick = () => {
-      const qty = Number(form.querySelector('[name=l_qty]').value) || 1;
-      const price = Number(form.querySelector('[name=l_price]').value) || 0;
-      const desc = form.querySelector('[name=l_desc]').value.trim();
-      const pid = form.querySelector('[name=l_part]').value;
-      if (!pid && !desc) { G.toast(t('err_required'), 'err'); return; }
-      items.push({ part_id: pid || null, description: pid ? `${picked.part_no || ''} ${G.tl(picked.name_ar, picked.name_en)}`.trim() : desc, qty, unit_price: price, kind: pid ? 'part' : 'other' });
-      form.querySelector('.lookup[data-res=parts] input[type=search]').value = '';
-      form.querySelector('[name=l_part]').value = ''; form.querySelector('[name=l_desc]').value = ''; form.querySelector('[name=l_price]').value = ''; form.querySelector('[name=l_qty]').value = 1;
-      picked = null;
+      const k = kind(); const qty = Number(val('l_qty').value) || 1; const price = Number(val('l_price').value) || 0;
+      const desc = val('l_desc').value.trim();
+      if (k === 'part') {
+        if (!picked || !val('l_part').value) { G.toast(t('err_required') + ': ' + t('part'), 'err'); return; }
+        items.push({ kind: 'part', part_id: picked.id, description: `${picked.part_no || ''} ${G.tl(picked.name_ar, picked.name_en)}`.trim(), qty, unit_price: price });
+        form.querySelector('.lookup[data-res=parts] input[type=search]').value = ''; val('l_part').value = ''; picked = null;
+      } else if (k === 'labor') {
+        const st = sts.find((x) => String(x.id) === val('l_service').value);
+        if (!st && !desc) { G.toast(t('err_required') + ': ' + t('description'), 'err'); return; }
+        items.push({ kind: 'labor', service_type_id: st ? st.id : null, description: desc || (st ? G.tl(st.name_ar, st.name_en) : ''), technician_id: val('l_tech').value || null, qty, unit_price: price });
+        val('l_service').value = ''; val('l_desc').placeholder = '';
+      } else {
+        if (!desc) { G.toast(t('err_required') + ': ' + t('description'), 'err'); return; }
+        items.push({ kind: 'other', description: desc, qty, unit_price: price });
+      }
+      val('l_desc').value = ''; val('l_price').value = ''; val('l_qty').value = 1;
       renderLines();
     };
+    const fb = view.querySelector('[data-full]');
+    if (fb) fb.onclick = () => { val('pay_amount').value = total().total; };
     renderLines();
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      const cust = form.querySelector('[name=customer_id]').value;
-      if (!cust) { G.toast(t('err_required') + ': ' + t('customer'), 'err'); return; }
+    const save = async (print) => {
       if (!items.length) { G.toast(t('err_invoice_empty'), 'err'); return; }
       const d = G.readForm(form);
-      const body = { customer_id: cust, vehicle_id: d.vehicle_id || null, date: d.date, notes: d.notes, discount: d.discount, tax_rate: d.tax_rate, items };
+      const body = {
+        customer_id: d.customer_id || null, customer: { name: d.c_name, phone: d.c_phone },
+        vehicle_id: d.vehicle_id || null, vehicle: { plate: d.v_plate, model: d.v_model, mileage: d.v_mileage },
+        date: d.date, notes: d.notes, discount: d.discount, tax_rate: d.tax_rate,
+        items: items.map((i) => ({ ...i, description: i.description || '' })),
+      };
       if (Number(d.pay_amount) > 0) body.payment = { amount: d.pay_amount, account_id: d.account_id, method: d.method };
-      try { const inv = await G.post('/api/invoices', body); G.toast(t('saved')); location.hash = `#/invoices/${inv.id}`; } catch (err) { G.fail(err); }
+      view.querySelectorAll('.form-actions .btn').forEach((b) => { b.disabled = true; });
+      try {
+        const inv = await G.post('/api/invoices', body);
+        G.toast(t('saved'));
+        location.hash = `#/invoices/${inv.id}${print ? '?print=1' : ''}`;
+      } catch (err) { G.fail(err); view.querySelectorAll('.form-actions .btn').forEach((b) => { b.disabled = false; }); }
     };
+    form.onsubmit = (e) => { e.preventDefault(); save(false); };
+    view.querySelector('[data-saveprint]').onclick = () => save(true);
   }, R.BILL);
 
   G.invoicePrint = (inv) => {
@@ -122,8 +215,9 @@
       <div class="signs"><div>${both('customer_signature')}<br><br>..................</div><div>${G.tl('الختم', 'Stamp')} / ${G.tl('التوقيع', 'Signature')}<br><br>..................</div></div>`);
   };
 
-  G.addRoute('/invoices/:id', async (view, p) => {
+  G.addRoute('/invoices/:id', async (view, p, q) => {
     let inv = await G.get(`/api/invoices/${p.id}/full`);
+    if (q.print === '1') setTimeout(() => G.invoicePrint(inv), 300);
     const render = () => {
       const due = Math.round((inv.total - inv.paid) * 100) / 100;
       const shareText = G.tl(

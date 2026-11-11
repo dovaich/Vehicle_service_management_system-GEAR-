@@ -393,6 +393,37 @@ test('full service-center flow', async () => {
   assert.equal(board.rows.find((x) => x.employee_id === byAtt.id).schedule, '10:00-18:00');
   assert.equal(board.rows.find((x) => x.employee_id === byAtt.id).late, 30);
 
+  // ---- quick invoice: no work order, labor + parts, customer / car typed in (or nothing at all)
+  const qPart = await call('POST', '/api/parts', { part_no: 'Q-1', name_en: 'Quick part', qty: 5, cost: 40, price: 100 });
+  const oilSt = (await call('GET', '/api/service-types?q=OIL')).rows.find((x) => x.code === 'OIL');
+  const custCount = async () => (await call('GET', '/api/customers?limit=1')).total;
+  const n0 = await custCount();
+  const qi = await call('POST', '/api/invoices', {
+    customer: { name: 'زبون جديد', phone: '01299998888' }, vehicle: { plate: 'ق ر ب 55', model: '520i', mileage: 60000 }, tax_rate: 0,
+    items: [{ kind: 'labor', service_type_id: oilSt.id, technician_id: tech.id, qty: 1, unit_price: 600 },
+      { kind: 'labor', description: 'Brake check', qty: 1, unit_price: 200 }, { part_id: qPart.id, qty: 2, unit_price: 100 }, { kind: 'other', description: 'Wash', qty: 1, unit_price: 50 }],
+    payment: { amount: 1050, account_id: cash.id },
+  });
+  assert.equal(qi.total, 1050); assert.equal(qi.status, 'paid'); assert.equal(qi.labor_total, 800);
+  assert.equal(qi.customer.name, 'زبون جديد'); assert.equal(qi.vehicle.plate, 'ق ر ب 55'); assert.equal(qi.vehicle.mileage, 60000);
+  assert.equal(await custCount(), n0 + 1, 'customer registered automatically');
+  assert.equal((await call('GET', `/api/parts/${qPart.id}`)).qty, 3);
+  const qRem = (await call('GET', `/api/reminders?vehicle_id=${qi.vehicle_id}`)).rows;
+  assert.equal(qRem.length, 1, 'oil-service reminder from the quick invoice'); assert.equal(qRem[0].due_mileage, 70000);
+  assert.ok(qi.items.find((i) => i.kind === 'labor' && i.technician_id === tech.id), 'technician kept for commission');
+  // same phone + same plate -> same customer and car
+  const qi2 = await call('POST', '/api/invoices', { customer: { name: 'اسم مختلف', phone: '01299998888' }, vehicle: { plate: 'ق ر ب  55' }, items: [{ kind: 'other', description: 'x', unit_price: 10 }] });
+  assert.equal(qi2.customer_id, qi.customer_id); assert.equal(qi2.vehicle_id, qi.vehicle_id);
+  // nothing typed -> the cash customer (always the same one)
+  const c1 = await call('POST', '/api/invoices', { items: [{ description: 'Coffee', unit_price: 20 }] });
+  const c2 = await call('POST', '/api/invoices', { items: [{ description: 'Water', unit_price: 5 }] });
+  assert.equal(c1.customer_id, c2.customer_id); assert.match(c1.customer.name, /Cash customer/);
+  assert.equal(await custCount(), n0 + 2, 'only one cash customer');
+  await call('POST', '/api/invoices', { items: [] }, { expect: 400 });
+  // not enough stock -> nothing is created (no stray customer)
+  await call('POST', '/api/invoices', { customer: { name: 'Ghost', phone: '0100000' }, items: [{ part_id: qPart.id, qty: 99, unit_price: 100 }] }, { expect: 400 });
+  assert.equal(await custCount(), n0 + 2);
+
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   const att = await call('POST', '/api/attachments', { ref_type: 'reception', ref_id: rec.id, mime: 'image/png', data: png });
