@@ -154,7 +154,7 @@
         break;
       }
       case 'checkbox':
-        return `<label class="check ${f.span ? 'span-' + f.span : ''}"><input type="checkbox" name="${f.name}" ${Number(v) || v === true ? 'checked' : ''} ${attrs}> <span>${esc(label)}</span></label>`;
+        return `<label class="check ${f.span ? 'span-' + f.span : ''}"><input type="checkbox" name="${f.name}" ${Number(v) || v === true ? 'checked' : ''} ${attrs}> <span>${esc(label)}${f.help ? `<small class="help" style="display:block">${esc(f.help)}</small>` : ''}</span></label>`;
       case 'lookup':
         input = G.lookupHtml(f, v, id);
         break;

@@ -123,7 +123,7 @@ window.I18N = {
   stock_in: ['إضافة للمخزن', 'Stock in'], stock_out: ['صرف من المخزن', 'Stock out'], stock_count: ['جرد (الكمية الفعلية)', 'Stock count (actual qty)'], low_only: ['تحت حد الطلب فقط', 'Low stock only'],
   mv_in: ['وارد', 'In'], mv_out: ['منصرف', 'Out'], mv_return: ['مرتجع', 'Return'], mv_adjust: ['تسوية جرد', 'Adjustment'], reference: ['المرجع', 'Reference'], user: ['المستخدم', 'User'],
   // suppliers & purchases
-  supplier: ['المورد', 'Supplier'], contact: ['المسؤول', 'Contact person'], opening_balance: ['الرصيد الافتتاحي', 'Opening balance'], statement: ['كشف حساب', 'Statement'],
+  supplier: ['المورد', 'Supplier'], contact: ['المسؤول', 'Contact person'], opening_balance: ['الرصيد الافتتاحي', 'Opening balance'], in_reports: ['تدخل في اليومية وحسابات المركز', 'Counts in daily closing & center accounts'], in_reports_help: ['شيل العلامة لخزنة خاصة (مثلاً خزنة الشركاء): الصادر والوارد منها لا يظهر في اليومية ولا المصروفات ولا رصيد المركز', 'Untick for a private box (e.g. partners): its movements are excluded from the daily closing, expenses and center balance'], off_books: ['خارج حسابات المركز', 'Off the books'], statement: ['كشف حساب', 'Statement'],
   pay_supplier: ['دفع للمورد', 'Pay supplier'], purchase: ['فاتورة مشتريات', 'Purchase'], new_purchase: ['فاتورة مشتريات جديدة', 'New purchase'], purchase_return: ['مرتجع مشتريات', 'Purchase return'],
   supplier_invoice_no: ['رقم فاتورة المورد', 'Supplier invoice no.'], is_return: ['مرتجع للمورد', 'Return to supplier'], unit_cost: ['تكلفة الوحدة', 'Unit cost'],
   debit: ['مدين', 'Debit'], credit: ['دائن', 'Credit'], payables: ['مستحقات للموردين', 'Payables'], new_part: ['قطعة جديدة', 'New part'],

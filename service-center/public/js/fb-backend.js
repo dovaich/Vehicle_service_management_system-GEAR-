@@ -263,8 +263,8 @@ function init() {
       filters: ['status', 'customer_id', 'vehicle_id'], special: { unpaid: ['open', '==', true] }, read: BILL, write: BILL, noCreate: true, noDelete: true,
     },
     accounts: {
-      cols: ['name', 'type', 'opening_balance', 'active'], required: ['name'], kw: (r) => [r.name], order: ['created_at', 'asc'], small: true, filters: ['active'],
-      read: MONEY, write: MGMT, numeric: ['opening_balance', 'active'], defaults: { active: 1, type: 'cash' },
+      cols: ['name', 'type', 'opening_balance', 'active', 'in_reports'], required: ['name'], kw: (r) => [r.name], order: ['created_at', 'asc'], small: true, filters: ['active'],
+      read: MONEY, write: MGMT, numeric: ['opening_balance', 'active', 'in_reports'], defaults: { active: 1, type: 'cash', in_reports: 1 },
       onCreate: (d) => { d.balance = num(d.opening_balance); },
       onUpdate: (d, old) => { if (d.opening_balance !== undefined) d.balance = inc(r2(num(d.opening_balance) - num(old.opening_balance))); },
       async beforeDelete(id) { if ((await all('transactions', W('account_id', '==', id), L(1))).length) throw bad('account_has_transactions'); },
@@ -1049,6 +1049,8 @@ function init() {
   // ------------------------------------------------------------------ dashboard & reports
   const cnt = async (c, ...cons) => (await F.getCountFromServer(q(c, ...cons))).data().count;
   const sumOf = async (c, field, ...cons) => num((await F.getAggregateFromServer(q(c, ...cons), { s: F.sum(field) })).data().s);
+  // accounts kept out of the center's books (owners' / partners' safe): missing flag = in the books
+  const inBooks = (accs) => accs.filter((a) => a.in_reports === undefined || a.in_reports === null || Number(a.in_reports) === 1);
   // each metric is independent: one failing query (e.g. an index still building) never breaks the dashboard
   const safe = async (fn, fallback) => { try { return await fn(); } catch (e) { console.warn('dashboard metric failed', e); return fallback; } };
   async function dashboard() {
@@ -1072,14 +1074,16 @@ function init() {
       // plain single-field queries only (no aggregation indexes needed)
       const from = addDays(t, -13) < ms ? addDays(t, -13) : ms;
       const invs = await safe(() => all('invoices', W('date', '>=', from)), []);
-      const txs = await safe(() => all('transactions', W('date', '>=', ms)), []);
+      const accsAll = await safe(() => all('accounts'), []);
+      const books = new Set(inBooks(accsAll).map((a) => a.id));
+      const txs = (await safe(() => all('transactions', W('date', '>=', ms)), [])).filter((x) => books.has(x.account_id));
       const sumInv = (f) => r2(invs.filter(f).reduce((s, i) => s + num(i.total_eff), 0));
       out.revenue_today = sumInv((i) => i.date === t);
       out.revenue_month = sumInv((i) => i.date >= ms && i.date <= t);
       out.collected_today = r2(txs.filter((x) => x.date === t && x.ref_type === 'invoice').reduce((s, x) => s + num(x.signed), 0));
       out.expenses_month = r2(txs.filter((x) => x.is_expense).reduce((s, x) => s + num(x.amount), 0));
       out.receivables = r2(await safe(() => sumOf('customers', 'balance'), 0));
-      out.cash_balance = r2((await safe(() => all('accounts'), [])).reduce((s, a) => s + num(a.balance), 0));
+      out.cash_balance = r2(inBooks(accsAll).reduce((s, a) => s + num(a.balance), 0));
       const g = {}; invs.filter((i) => i.date >= addDays(t, -13)).forEach((i) => { g[i.date] = (g[i.date] || 0) + num(i.total_eff); });
       out.daily = Object.keys(g).sort().map((date) => ({ date, total: r2(g[date]) }));
     }
@@ -1090,13 +1094,15 @@ function init() {
     const invs = invAll.filter((i) => i.status !== 'cancelled');
     const S = (f) => r2(invs.reduce((s, i) => s + num(i[f]), 0));
     const inv = { n: invs.length, total: S('total'), labor: S('labor_total'), parts: S('parts_total'), parts_cost: S('parts_cost'), discount: S('discount'), tax: S('tax'), paid: S('paid') };
-    const txs = await all('transactions', W('date', '>=', from), W('date', '<=', to));
+    const accsR = await all('accounts');
+    const booksR = new Set(inBooks(accsR).map((a) => a.id));
+    const txs = (await all('transactions', W('date', '>=', from), W('date', '<=', to))).filter((x) => booksR.has(x.account_id));
     const ex = {}; txs.filter((x) => x.is_expense).forEach((x) => { ex[x.category] = (ex[x.category] || 0) + x.amount; });
     const expenses = Object.entries(ex).map(([category, amount]) => ({ category, amount: r2(amount) })).sort((a, b) => b.amount - a.amount);
     const totalExpenses = r2(expenses.reduce((s, e) => s + e.amount, 0));
     const otherIncome = r2(txs.filter((x) => x.direction === 'in' && x.category === 'other_income').reduce((s, x) => s + x.amount, 0));
     const netSales = r2(inv.total - inv.tax); const gross = r2(netSales - inv.parts_cost);
-    const accs = await all('accounts');
+    const accs = inBooks(accsR);
     const group = (arr, key, val) => { const m = {}; arr.forEach((x) => { const k = key(x); m[k] = m[k] || { n: 0, amount: 0, qty: 0, profit: 0 }; val(m[k], x); }); return m; };
     const items = invs.flatMap((i) => (i.items || []).map((it) => ({ ...it, _inv: i })));
     const ts = group(items.filter((i) => i.kind === 'labor'), (i) => i.description, (a, i) => { a.n++; a.amount += i.amount; });
@@ -1459,7 +1465,8 @@ function init() {
   });
   route('GET', '/api/cash/daily', MONEY, async ({ query }) => {
     const date = query.date || today();
-    const accs = (await all('accounts')).filter((a) => Number(a.active)).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    const accs = inBooks(await all('accounts')).filter((a) => Number(a.active)).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    const booksD = new Set(accs.map((a) => a.id));
     const after = await all('transactions', W('date', '>=', date));
     const accounts = accs.map((a) => {
       const mine = after.filter((t) => t.account_id === a.id);
@@ -1470,7 +1477,7 @@ function init() {
       return { id: a.id, name: a.name, type: a.type, opening: r2(closing - cin + cout), cash_in: r2(cin), cash_out: r2(cout), closing };
     });
     const g = {};
-    after.filter((t) => t.date === date).forEach((t) => { const k = t.category + '|' + t.direction; g[k] = g[k] || { category: t.category, direction: t.direction, amount: 0, n: 0 }; g[k].amount += t.amount; g[k].n++; });
+    after.filter((t) => t.date === date && booksD.has(t.account_id)).forEach((t) => { const k = t.category + '|' + t.direction; g[k] = g[k] || { category: t.category, direction: t.direction, amount: 0, n: 0 }; g[k].amount += t.amount; g[k].n++; });
     return { date, accounts, by_category: Object.values(g).map((x) => ({ ...x, amount: r2(x.amount) })) };
   });
   // ---- fix mistakes in the cash book: edit or delete any movement, with its effects reversed

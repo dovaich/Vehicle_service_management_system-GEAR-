@@ -384,12 +384,12 @@
       <div class="kpis" data-accounts></div><div data-tabs></div>`;
     const loadAccounts = async () => {
       const accs = await G.loadAccounts(true);
-      view.querySelector('[data-accounts]').innerHTML = accs.map((a) => `<div class="kpi ${a.balance < 0 ? 'bad' : ''}"><span class="kpi-i">${{ cash: '💵', bank: '🏦', pos: '💳', wallet: '📱' }[a.type] || '💰'}</span><div><small>${esc(a.name)}</small><b>${G.money(a.balance)}</b></div>${G.can(R.MGMT) ? `<button class="icon-btn" data-edit-acc="${a.id}">✎</button>` : ''}</div>`).join('');
+      view.querySelector('[data-accounts]').innerHTML = accs.map((a) => `<div class="kpi ${a.balance < 0 ? 'bad' : ''}"><span class="kpi-i">${{ cash: '💵', bank: '🏦', pos: '💳', wallet: '📱' }[a.type] || '💰'}</span><div><small>${esc(a.name)}</small><b>${G.money(a.balance)}</b>${Number(a.in_reports ?? 1) === 0 ? `<span class="badge b-new" title="${t('in_reports_help')}">🔒 ${t('off_books')}</span>` : ''}</div>${G.can(R.MGMT) ? `<button class="icon-btn" data-edit-acc="${a.id}">✎</button>` : ''}</div>`).join('');
       view.querySelectorAll('[data-edit-acc]').forEach((b) => b.onclick = () => accDialog(accs.find((a) => String(a.id) === b.dataset.editAcc)));
     };
     const accDialog = (a = {}) => G.formDialog({
       title: a.id ? t('edit') : t('new_account'),
-      fields: [{ name: 'name', required: true, span: 2 }, { name: 'type', type: 'select', options: G.opt(['cash', 'bank', 'pos', 'wallet'], 'acc_'), noEmpty: true }, { name: 'opening_balance', type: 'number' }, { name: 'active', type: 'checkbox', default: 1 }],
+      fields: [{ name: 'name', required: true, span: 2 }, { name: 'type', type: 'select', options: G.opt(['cash', 'bank', 'pos', 'wallet'], 'acc_'), noEmpty: true }, { name: 'opening_balance', type: 'number' }, { name: 'active', type: 'checkbox', default: 1 }, { name: 'in_reports', type: 'checkbox', default: 1, span: 2, help: t('in_reports_help') }],
       values: a,
       onSubmit: async (d, close) => { if (a.id) await G.put(`/api/accounts/${a.id}`, d); else await G.post('/api/accounts', d); close(); refreshAll(); },
     });

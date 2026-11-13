@@ -305,7 +305,7 @@ const RES = {
   },
   accounts: {
     table: 'accounts',
-    cols: ['name', 'type', 'opening_balance', 'active'],
+    cols: ['name', 'type', 'opening_balance', 'active', 'in_reports'],
     required: ['name'],
     select: `SELECT a.*, ROUND(a.opening_balance + (SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM transactions t WHERE t.account_id=a.id),2) AS balance FROM accounts a`,
     alias: 'a',
@@ -1120,27 +1120,30 @@ function dashboard(user) {
   if (hasAny(user, MONEY)) {
     out.revenue_today = r2(get("SELECT COALESCE(SUM(total),0) AS s FROM invoices WHERE date=? AND status!='cancelled'", t).s);
     out.revenue_month = r2(get("SELECT COALESCE(SUM(total),0) AS s FROM invoices WHERE substr(date,1,7)=? AND status!='cancelled'", month).s);
-    out.collected_today = r2(get("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) AS s FROM transactions WHERE date=? AND ref_type='invoice'", t).s);
-    out.expenses_month = r2(get("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE substr(date,1,7)=? AND direction='out' AND category NOT IN ('transfer','supplier_payment','refund')", month).s);
+    out.collected_today = r2(get("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) AS s FROM transactions WHERE date=? AND ref_type='invoice' AND " + IN_BOOKS, t).s);
+    out.expenses_month = r2(get("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE substr(date,1,7)=? AND direction='out' AND category NOT IN ('transfer','supplier_payment','refund') AND " + IN_BOOKS, month).s);
     out.receivables = r2(get("SELECT COALESCE(SUM(total-paid),0) AS s FROM invoices WHERE status IN ('unpaid','partial')").s);
-    out.cash_balance = r2(get(`SELECT COALESCE(SUM(a.opening_balance),0) + (SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM transactions) AS s FROM accounts a`).s);
+    out.cash_balance = r2(get(`SELECT COALESCE(SUM(a.opening_balance),0) + (SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM transactions WHERE ${IN_BOOKS}) AS s FROM accounts a WHERE COALESCE(a.in_reports,1)=1`).s);
     out.daily = all(`SELECT date, SUM(total) AS total FROM invoices WHERE status!='cancelled' AND date >= date('now','localtime','-13 days') GROUP BY date ORDER BY date`);
   }
   return out;
 }
 
+// movements of accounts kept out of the center's books (owners' / partners' safe) are left out of
+// the daily closing, the dashboard cash figures and the profit & loss
+const IN_BOOKS = "account_id IN (SELECT id FROM accounts WHERE COALESCE(in_reports,1)=1)";
 function reports(from, to) {
   const inv = get(`SELECT COUNT(*) AS n, COALESCE(SUM(total),0) AS total, COALESCE(SUM(labor_total),0) AS labor, COALESCE(SUM(parts_total),0) AS parts,
                    COALESCE(SUM(parts_cost),0) AS parts_cost, COALESCE(SUM(discount),0) AS discount, COALESCE(SUM(tax),0) AS tax, COALESCE(SUM(paid),0) AS paid
                    FROM invoices WHERE status!='cancelled' AND date BETWEEN ? AND ?`, from, to);
   const expenses = all(`SELECT category, SUM(amount) AS amount FROM transactions WHERE direction='out' AND date BETWEEN ? AND ?
-                        AND category NOT IN ('transfer','supplier_payment','refund') GROUP BY category ORDER BY amount DESC`, from, to);
-  const otherIncome = r2(get(`SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE direction='in' AND date BETWEEN ? AND ? AND category IN ('other_income')`, from, to).s);
+                        AND category NOT IN ('transfer','supplier_payment','refund') AND ${IN_BOOKS} GROUP BY category ORDER BY amount DESC`, from, to);
+  const otherIncome = r2(get(`SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE direction='in' AND date BETWEEN ? AND ? AND category IN ('other_income') AND ${IN_BOOKS}`, from, to).s);
   const totalExpenses = r2(expenses.reduce((s, e) => s + e.amount, 0));
   const netSales = r2(inv.total - inv.tax);
   const gross = r2(netSales - inv.parts_cost);
   const cashflow = all(`SELECT a.name, SUM(CASE WHEN t.direction='in' THEN t.amount ELSE 0 END) AS cash_in, SUM(CASE WHEN t.direction='out' THEN t.amount ELSE 0 END) AS cash_out
-                        FROM accounts a LEFT JOIN transactions t ON t.account_id=a.id AND t.date BETWEEN ? AND ? GROUP BY a.id ORDER BY a.id`, from, to);
+                        FROM accounts a LEFT JOIN transactions t ON t.account_id=a.id AND t.date BETWEEN ? AND ? WHERE COALESCE(a.in_reports,1)=1 GROUP BY a.id ORDER BY a.id`, from, to);
   return {
     from, to,
     invoices: { ...inv, total: r2(inv.total), labor: r2(inv.labor), parts: r2(inv.parts), parts_cost: r2(inv.parts_cost), discount: r2(inv.discount), tax: r2(inv.tax), paid: r2(inv.paid) },
@@ -1588,9 +1591,9 @@ route('GET', '/api/cash/daily', MONEY, ({ query }) => {
      a.opening_balance + (SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) FROM transactions WHERE account_id=a.id AND date < ?) AS opening,
      (SELECT COALESCE(SUM(amount),0) FROM transactions WHERE account_id=a.id AND date=? AND direction='in') AS cash_in,
      (SELECT COALESCE(SUM(amount),0) FROM transactions WHERE account_id=a.id AND date=? AND direction='out') AS cash_out
-     FROM accounts a WHERE a.active=1 ORDER BY a.id`, date, date, date);
+     FROM accounts a WHERE a.active=1 AND COALESCE(a.in_reports,1)=1 ORDER BY a.id`, date, date, date);
   accounts.forEach((a) => { a.closing = r2(a.opening + a.cash_in - a.cash_out); });
-  const byCategory = all("SELECT category, direction, SUM(amount) AS amount, COUNT(*) AS n FROM transactions WHERE date=? GROUP BY category, direction", date);
+  const byCategory = all(`SELECT category, direction, SUM(amount) AS amount, COUNT(*) AS n FROM transactions WHERE date=? AND ${IN_BOOKS} GROUP BY category, direction`, date);
   return { date, accounts, by_category: byCategory };
 });
 

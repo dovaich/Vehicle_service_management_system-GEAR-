@@ -168,6 +168,21 @@ test('full service-center flow', async () => {
   const dash = await call('GET', '/api/dashboard');
   assert.equal(dash.in_workshop, 0);
   assert.ok(dash.revenue_today > 0);
+  // private box (not in the center's books): its expenses stay out of reports, daily closing and dashboard
+  const priv = await call('POST', '/api/accounts', { name: 'Partners box', type: 'cash', in_reports: 0 });
+  const dash0 = await call('GET', '/api/dashboard');
+  const daily0 = await call('GET', `/api/cash/daily?date=${today}`);
+  await call('POST', '/api/transfer', { from: cash.id, to: priv.id, amount: 100 });
+  await call('POST', '/api/transactions', { account_id: priv.id, direction: 'out', amount: 70, category: 'other', description: 'Partner withdrawal' });
+  const rep2 = await call('GET', `/api/reports/summary?from=${from}&to=${today}`);
+  assert.equal(JSON.stringify(rep2.expenses), JSON.stringify(rep.expenses), 'private expense not in report');
+  const dash1 = await call('GET', '/api/dashboard');
+  assert.equal(dash1.expenses_month, dash0.expenses_month);
+  assert.equal(Math.round((dash0.cash_balance - dash1.cash_balance) * 100) / 100, 100, 'only the transfer leaves the center books');
+  const daily1 = await call('GET', `/api/cash/daily?date=${today}`);
+  assert.ok(!daily1.accounts.some((a) => a.id === priv.id), 'private box not in daily closing');
+  assert.equal(JSON.stringify(daily1.by_category.filter((x) => x.category !== 'transfer')), JSON.stringify(daily0.by_category.filter((x) => x.category !== 'transfer')));
+  assert.equal((await call('GET', `/api/accounts/${priv.id}`)).balance, 30);
   const search = await call('GET', '/api/search?q=WBA8E9');
   assert.equal(search.vehicles.length, 1);
 
