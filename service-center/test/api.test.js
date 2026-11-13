@@ -136,8 +136,8 @@ test('full service-center flow', async () => {
   const accs = (await call('GET', '/api/accounts')).rows;
   assert.equal(accs[0].balance, Math.round((inv.total - 2000 - 500 - 300) * 100) / 100);
   assert.equal(accs[1].balance, 300);
-  const linked = (await call('GET', `/api/transactions?category=invoice_payment`)).rows[0];
-  await call('DELETE', `/api/transactions/${linked.id}`, undefined, { expect: 400 });
+  void 0;
+  // (linked movements can now be fixed / deleted with their effects reversed - see the cash-book tests below)
 
   // commissions + payroll
   const today = new Date().toISOString().slice(0, 10);
@@ -267,7 +267,7 @@ test('full service-center flow', async () => {
   const today2 = new Date().toISOString().slice(0, 10);
   assert.ok((await call('GET', `/api/cash/daily?date=${advTx.date}`)).by_category.some((x) => x.category === 'advance'), 'advance in daily closing');
   await call('POST', '/api/bonuses', { employee_id: wE.id, type: 'advance', amount: 50 }, { expect: 400 }); // must go through the advance form
-  await call('DELETE', `/api/transactions/${advTx.id}`, undefined, { expect: 400 }); // linked to the advance
+  // (an unsettled advance's cash movement can be fixed / deleted - see the cash-book tests)
   wr = (await call('GET', '/api/payroll?period=W2026-09-26')).find((x) => x.employee_id === wE.id);
   assert.equal(wr.advances, 300); assert.equal(wr.net, 700);
   c0 = await cashOf();
@@ -459,6 +459,72 @@ test('full service-center flow', async () => {
   await call('POST', '/api/auth/login', { username: 'tech1', password: 'secret1' });
   await call('PUT', `/api/invoices/${ei.id}/full`, { items: [{ description: 'x', unit_price: 999 }] }, { expect: 403 });
   cookie = adminCookie;
+
+  // ---- fixing the cash book: edit / delete any movement
+  const accs3 = (await call('GET', '/api/accounts')).rows; const A1 = accs3[0].id; const A2 = accs3[1].id; const A3 = accs3[2].id;
+  const balOf = async (id) => (await call('GET', '/api/accounts')).rows.find((x) => x.id === id).balance;
+  const fixInv = await call('POST', '/api/invoices', { customer: { name: 'Fix Pay', phone: '01055550001' }, tax_rate: 0, items: [{ description: 'Service', unit_price: 1000 }], payment: { amount: 600, account_id: A1, method: 'cash' } });
+  const pay1 = fixInv.payments[0];
+  let [a1, a3] = [await balOf(A1), await balOf(A3)];
+  // recorded in the wrong box with the wrong method -> move it to the POS as card
+  await call('PUT', `/api/transactions/${pay1.id}`, { account_id: A3, method: 'card' });
+  assert.equal(await balOf(A1), Math.round((a1 - 600) * 100) / 100); assert.equal(await balOf(A3), Math.round((a3 + 600) * 100) / 100);
+  let fi = await call('GET', `/api/invoices/${fixInv.id}/full`);
+  assert.equal(fi.payments[0].method, 'card'); assert.equal(fi.payments[0].account_id, A3); assert.equal(fi.paid, 600);
+  // wrong amount -> fix it (and not above the invoice total)
+  await call('PUT', `/api/transactions/${pay1.id}`, { amount: 1200 }, { expect: 400 });
+  await call('PUT', `/api/transactions/${pay1.id}`, { amount: 1000 });
+  fi = await call('GET', `/api/invoices/${fixInv.id}/full`); assert.equal(fi.status, 'paid');
+  // delete the payment -> invoice unpaid again, money out of the box, customer owes again
+  a3 = await balOf(A3);
+  await call('DELETE', `/api/transactions/${pay1.id}`);
+  fi = await call('GET', `/api/invoices/${fixInv.id}/full`);
+  assert.equal(fi.status, 'unpaid'); assert.equal(fi.paid, 0); assert.equal(await balOf(A3), Math.round((a3 - 1000) * 100) / 100);
+  assert.equal((await call('GET', `/api/customers/${fi.customer_id}`)).balance, 1000);
+  // transfer: change the amount (both sides) then delete it (both sides)
+  a1 = await balOf(A1); let a2 = await balOf(A2);
+  await call('POST', '/api/transfer', { from: A1, to: A2, amount: 500 });
+  const trOut = (await call('GET', `/api/transactions?category=transfer&account_id=${A1}`)).rows[0];
+  await call('PUT', `/api/transactions/${trOut.id}`, { amount: 300 });
+  assert.equal(await balOf(A1), Math.round((a1 - 300) * 100) / 100); assert.equal(await balOf(A2), Math.round((a2 + 300) * 100) / 100);
+  await call('DELETE', `/api/transactions/${trOut.id}`);
+  assert.equal(await balOf(A1), a1); assert.equal(await balOf(A2), a2);
+  // payroll undo: delete the salary payment -> deductions and advances are open again
+  const pe = await call('POST', '/api/employees', { name: 'Undo Guy', job: 'technician', salary: 3000 });
+  await call('POST', '/api/bonuses', { employee_id: pe.id, type: 'deduction', amount: 200 });
+  const pAdv = await call('POST', '/api/advances', { employee_id: pe.id, amount: 500, account_id: A1 });
+  await call('POST', '/api/payroll/pay', { employee_id: pe.id, account_id: A1, period: '2026-12' });
+  let prow = (await call('GET', '/api/payroll?period=2026-12')).find((x) => x.employee_id === pe.id);
+  assert.equal(prow.net, 0);
+  await call('DELETE', `/api/transactions/${pAdv.transaction_id}`, undefined, { expect: 400 }); // advance already deducted
+  const salTx = (await call('GET', `/api/transactions?category=salary&party_id=${pe.id}`)).rows[0];
+  assert.equal(salTx.amount, 2300);
+  await call('PUT', `/api/transactions/${salTx.id}`, { amount: 2000 }, { expect: 400 }); // salary amount locked
+  await call('PUT', `/api/transactions/${salTx.id}`, { account_id: A2 }); // but the box can be fixed
+  a2 = await balOf(A2);
+  await call('DELETE', `/api/transactions/${salTx.id}`);
+  assert.equal(await balOf(A2), Math.round((a2 + 2300) * 100) / 100);
+  prow = (await call('GET', '/api/payroll?period=2026-12')).find((x) => x.employee_id === pe.id);
+  assert.equal(prow.net, 2300); assert.equal(prow.deductions, 200); assert.equal(prow.advances, 500);
+  // now the advance is open again: it can be edited / deleted
+  await call('PUT', `/api/transactions/${pAdv.transaction_id}`, { amount: 400 });
+  assert.equal((await call('GET', `/api/bonuses/${pAdv.id}`)).amount, 400);
+  await call('DELETE', `/api/transactions/${pAdv.transaction_id}`);
+  await call('GET', `/api/bonuses/${pAdv.id}`, undefined, { expect: 404 });
+  // carried-over advance from an undone payroll disappears
+  const pe2 = await call('POST', '/api/employees', { name: 'Carry Undo', job: 'technician', salary: 1000 });
+  await call('POST', '/api/advances', { employee_id: pe2.id, amount: 1300, account_id: A1 });
+  await call('POST', '/api/payroll/pay', { employee_id: pe2.id, account_id: A1, period: '2026-12' });
+  assert.equal((await call('GET', `/api/bonuses?employee_id=${pe2.id}&paid=0`)).total, 1, 'carried 300');
+  const salTx2 = (await call('GET', `/api/transactions?category=salary&party_id=${pe2.id}`)).rows[0];
+  await call('DELETE', `/api/transactions/${salTx2.id}`);
+  const open2 = (await call('GET', `/api/bonuses?employee_id=${pe2.id}&paid=0`)).rows;
+  assert.equal(open2.length, 1); assert.equal(open2[0].amount, 1300, 'back to the original advance, no carried copy');
+  // purchase payment delete -> purchase unpaid again
+  const fixPo = await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ new_name: 'Fix po part', qty: 1, unit_cost: 100 }], payment: { amount: 100, account_id: A1 } });
+  assert.equal(fixPo.status, 'paid');
+  await call('DELETE', `/api/transactions/${fixPo.payments[0].id}`);
+  assert.equal((await call('GET', `/api/purchases/${fixPo.id}/full`)).status, 'unpaid');
 
   // attachments
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';

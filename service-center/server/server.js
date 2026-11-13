@@ -1086,9 +1086,9 @@ function payPayroll(body, user) {
     const desc = `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${row.bonuses} - ${row.deductions} - ${row.advances})`;
     const tid = Number(run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id,period,salary_part)
       VALUES(?,?,'out',?,'salary',?,'employee',?,?,?,?)`, today(), account_id, Math.max(0, cash), desc, e.id, user.id, period, salaryDue).lastInsertRowid);
-    run("UPDATE bonuses SET paid=1, transaction_id=COALESCE(CASE WHEN type='advance' THEN transaction_id END, ?) WHERE employee_id=? AND paid=0", tid, e.id);
+    run("UPDATE bonuses SET paid=1, settled_tx=?, transaction_id=COALESCE(CASE WHEN type='advance' THEN transaction_id END, ?) WHERE employee_id=? AND paid=0", tid, tid, e.id);
     // advances/deductions larger than the pay: the rest stays as an advance for the next payroll
-    if (cash < 0) run("INSERT INTO bonuses(employee_id,date,period,type,amount,reason,paid) VALUES(?,?,?,'advance',?,?,0)", e.id, today(), period, -cash, `Carried over from ${PAY.periodLabel(period)}`);
+    if (cash < 0) run("INSERT INTO bonuses(employee_id,date,period,type,amount,reason,paid,carried_from_tx) VALUES(?,?,?,'advance',?,?,0,?)", e.id, today(), period, -cash, `Carried over from ${PAY.periodLabel(period)}`, tid);
     audit(user, 'payroll', 'employees', e.id, { period, cash });
     return { ok: true, paid: Math.max(0, cash), carried: cash < 0 ? -cash : 0 };
   });
@@ -1512,6 +1512,66 @@ route('POST', '/api/stock/adjust', STORE, ({ body, user }) => {
 });
 
 // cash
+// ---- fix mistakes in the cash book: edit or delete any movement, with its effects reversed
+const r2s = (t) => (t.direction === 'in' ? t.amount : -t.amount);
+function editTransaction(id, body, user) {
+  const t = get('SELECT * FROM transactions WHERE id=?', id);
+  if (!t) throw new HttpError(404, 'not_found');
+  const accountId = body.account_id ? Number(body.account_id) : t.account_id;
+  if (!get('SELECT id FROM accounts WHERE id=?', accountId)) throw bad('required', { field: 'account_id' });
+  const amount = body.amount !== undefined && body.amount !== '' && body.amount !== null ? r2(body.amount) : t.amount;
+  if (!(amount > 0) && !(t.category === 'salary' && amount === 0)) throw bad('invalid_amount');
+  return tx(() => {
+    if (amount !== t.amount) {
+      if (t.category === 'salary') throw bad('salary_amount_locked');
+      if (t.ref_type === 'invoice') {
+        const inv = get('SELECT * FROM invoices WHERE id=?', t.ref_id);
+        const others = get("SELECT COALESCE(SUM(CASE WHEN direction='in' THEN amount ELSE -amount END),0) AS s FROM transactions WHERE ref_type='invoice' AND ref_id=? AND id!=?", t.ref_id, id).s;
+        const newPaid = r2(others + (t.direction === 'in' ? amount : -amount));
+        if (inv && newPaid > inv.total + 0.009) throw bad('amount_exceeds_due', { due: r2(inv.total - others) });
+        if (newPaid < -0.009) throw bad('invalid_amount');
+      }
+      if (t.ref_type === 'advance') {
+        const b = get('SELECT * FROM bonuses WHERE id=?', t.ref_id);
+        if (b && b.paid) throw bad('advance_settled');
+        if (b) run('UPDATE bonuses SET amount=? WHERE id=?', amount, b.id);
+      }
+      if (t.ref_type === 'transfer') run("UPDATE transactions SET amount=? WHERE ref_type='transfer' AND ref_id=? AND id!=?", amount, t.ref_id, id);
+    }
+    run('UPDATE transactions SET account_id=?, amount=?, method=?, date=?, description=? WHERE id=?', accountId, amount,
+      body.method !== undefined ? body.method || null : t.method, body.date || t.date, body.description !== undefined ? body.description || null : t.description, id);
+    if (t.ref_type === 'invoice') recalcInvoice(t.ref_id);
+    if (t.ref_type === 'purchase') recalcPurchase(t.ref_id);
+    audit(user, 'edit', 'transactions', id, { account: [t.account_id, accountId], amount: [t.amount, amount], method: [t.method, body.method] });
+    return get('SELECT * FROM transactions WHERE id=?', id);
+  });
+}
+function deleteTransaction(id, user) {
+  const t = get('SELECT * FROM transactions WHERE id=?', id);
+  if (!t) throw new HttpError(404, 'not_found');
+  tx(() => {
+    if (t.ref_type === 'transfer') run("DELETE FROM transactions WHERE ref_type='transfer' AND ref_id=? AND id!=?", t.ref_id, id);
+    if (t.ref_type === 'advance') {
+      const b = get('SELECT * FROM bonuses WHERE id=?', t.ref_id);
+      if (b && b.paid) throw bad('advance_settled');
+      if (b) run('DELETE FROM bonuses WHERE id=?', b.id);
+    }
+    if (t.category === 'salary' && t.party_type === 'employee') {
+      // the payroll is undone: what it settled is open again, a carried-over advance it created goes away
+      run('DELETE FROM bonuses WHERE carried_from_tx=? AND paid=0', id);
+      run("UPDATE bonuses SET paid=0, settled_tx=NULL, transaction_id=CASE WHEN type='advance' THEN transaction_id END WHERE settled_tx=?", id);
+    }
+    if (t.category === 'bonus' && t.party_type === 'employee') run('UPDATE bonuses SET paid=0, transaction_id=NULL WHERE transaction_id=? AND type!=?', id, 'advance');
+    run('DELETE FROM transactions WHERE id=?', id);
+    if (t.ref_type === 'invoice') recalcInvoice(t.ref_id);
+    if (t.ref_type === 'purchase') recalcPurchase(t.ref_id);
+    audit(user, 'delete', 'transactions', id, { amount: t.amount, signed: r2s(t), category: t.category, ref: t.ref_type });
+  });
+  return { ok: true };
+}
+route('PUT', '/api/transactions/:id', MONEY, ({ params, body, user }) => editTransaction(Number(params.id), body, user));
+route('DELETE', '/api/transactions/:id', MONEY, ({ params, user }) => deleteTransaction(Number(params.id), user));
+
 route('POST', '/api/transfer', MONEY, ({ body, user }) => {
   const amount = r2(body.amount);
   if (!(amount > 0) || !body.from || !body.to || body.from === body.to) throw bad('invalid_transfer');

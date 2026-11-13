@@ -1036,10 +1036,10 @@ function init() {
     const cash = r2(salaryDue + adj);
     const t = await addTx({ account_id, direction: 'out', amount: Math.max(0, cash), category: 'salary', description: `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${rowp.bonuses} - ${rowp.deductions} - ${rowp.advances})`, party_type: 'employee', party_id: e.id, period, salary_part: salaryDue });
     const b = F.writeBatch(db);
-    for (const x of await all('bonuses', W('employee_id', '==', e.id), W('paid', '==', 0))) b.update(ref('bonuses', x.id), { paid: 1, transaction_id: x.type === 'advance' && x.transaction_id ? x.transaction_id : t.id });
+    for (const x of await all('bonuses', W('employee_id', '==', e.id), W('paid', '==', 0))) b.update(ref('bonuses', x.id), { paid: 1, settled_tx: t.id, transaction_id: x.type === 'advance' && x.transaction_id ? x.transaction_id : t.id });
     if (cash < 0) {
       const cref = newRef('bonuses');
-      b.set(cref, { employee_id: e.id, employee_name: e.name, job: e.job || null, date: today(), period, type: 'advance', amount: -cash, reason: `Carried over from ${PAY.periodLabel(period)}`, paid: 0, transaction_id: null, created_at: nowStr(), kw: keywords(e.name, 'carried') });
+      b.set(cref, { employee_id: e.id, employee_name: e.name, job: e.job || null, date: today(), period, type: 'advance', amount: -cash, reason: `Carried over from ${PAY.periodLabel(period)}`, paid: 0, transaction_id: null, carried_from_tx: t.id, created_at: nowStr(), kw: keywords(e.name, 'carried') });
     }
     await b.commit();
     await audit('payroll', 'employees', e.id, { period, cash });
@@ -1473,6 +1473,90 @@ function init() {
     after.filter((t) => t.date === date).forEach((t) => { const k = t.category + '|' + t.direction; g[k] = g[k] || { category: t.category, direction: t.direction, amount: 0, n: 0 }; g[k].amount += t.amount; g[k].n++; });
     return { date, accounts, by_category: Object.values(g).map((x) => ({ ...x, amount: r2(x.amount) })) };
   });
+  // ---- fix mistakes in the cash book: edit or delete any movement, with its effects reversed
+  const signedOf = (direction, amount) => (direction === 'in' ? r2(amount) : -r2(amount));
+  async function editTx(id, body) {
+    const t = await mustRow('transactions', id);
+    const accountId = body.account_id ? String(body.account_id) : t.account_id;
+    const acc = await mustRow('accounts', accountId);
+    const amount = body.amount !== undefined && body.amount !== '' && body.amount !== null ? r2(body.amount) : t.amount;
+    if (!(amount > 0) && !(t.category === 'salary' && amount === 0)) throw bad('invalid_amount');
+    const dAmt = r2(amount - t.amount);
+    const newSigned = signedOf(t.direction, amount); const dSigned = r2(newSigned - t.signed);
+    let inv = null; let pur = null; let adv = null; let legs = [];
+    if (dAmt) {
+      if (t.category === 'salary') throw bad('salary_amount_locked');
+      if (t.ref_type === 'invoice') {
+        inv = await getRow('invoices', t.ref_id);
+        if (inv && r2(inv.paid + dSigned) > inv.total + 0.009) throw bad('amount_exceeds_due', { due: r2(inv.total - inv.paid + t.signed) });
+        if (inv && r2(inv.paid + dSigned) < -0.009) throw bad('invalid_amount');
+      }
+      if (t.ref_type === 'advance') { adv = await getRow('bonuses', t.ref_id); if (adv && adv.paid) throw bad('advance_settled'); }
+      if (t.ref_type === 'transfer') legs = (await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))).filter((x) => x.id !== id);
+    }
+    if (t.ref_type === 'invoice' && !inv) inv = await getRow('invoices', t.ref_id);
+    if (t.ref_type === 'purchase') pur = await getRow('purchases', t.ref_id);
+    const b = F.writeBatch(db);
+    const desc = body.description !== undefined ? body.description || null : t.description || null;
+    b.update(ref('transactions', id), clean({ account_id: acc.id, account_name: acc.name, amount, signed: newSigned, method: body.method !== undefined ? body.method || null : t.method || null,
+      date: body.date || t.date, description: desc, kw: keywords(desc, t.category, acc.name, t.party_name) }));
+    if (acc.id === t.account_id) { if (dSigned) b.update(ref('accounts', acc.id), { balance: inc(dSigned) }); }
+    else { b.update(ref('accounts', t.account_id), { balance: inc(-t.signed) }); b.update(ref('accounts', acc.id), { balance: inc(newSigned) }); }
+    if (dAmt && t.party_type === 'supplier' && t.party_id) b.update(ref('suppliers', t.party_id), { balance: inc(t.direction === 'out' ? -dAmt : dAmt) });
+    if (dAmt && inv) {
+      const paid = r2(inv.paid + dSigned); const status = invStatus(inv.total, paid);
+      b.update(ref('invoices', inv.id), { paid, status, open: ['unpaid', 'partial'].includes(status) });
+      b.update(ref('customers', inv.customer_id), { balance: inc(-dSigned) });
+      if (inv.work_order_id) b.update(ref('work_orders', inv.work_order_id), { invoice_status: status });
+    }
+    if (dAmt && pur) { const paid = r2(pur.paid + dAmt); b.update(ref('purchases', pur.id), { paid, status: paid <= 0 ? 'unpaid' : paid + 0.009 >= pur.total ? 'paid' : 'partial' }); }
+    if (dAmt && adv) b.update(ref('bonuses', adv.id), { amount });
+    for (const l of legs) { b.update(ref('transactions', l.id), { amount, signed: signedOf(l.direction, amount) }); b.update(ref('accounts', l.account_id), { balance: inc(r2(signedOf(l.direction, amount) - l.signed)) }); }
+    await b.commit();
+    await audit('edit', 'transactions', id, { account: [t.account_id, acc.id], amount: [t.amount, amount], method: [t.method, body.method] });
+    return { ...(await getRow('transactions', id)), kw: undefined };
+  }
+  async function deleteTx(id) {
+    const t = await mustRow('transactions', id);
+    if (t.ref_type === 'advance') {
+      const bn = await getRow('bonuses', t.ref_id);
+      if (bn && bn.paid) throw bad('advance_settled');
+      if (bn) await F.deleteDoc(ref('bonuses', bn.id));
+    }
+    if (t.ref_type === 'transfer') for (const o of await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))) if (o.id !== id) await removeTx(o);
+    if (t.category === 'salary' && t.party_type === 'employee') {
+      // the payroll is undone: what it settled is open again, a carried-over advance it created goes away
+      const b = F.writeBatch(db);
+      for (const x of await all('bonuses', W('carried_from_tx', '==', id))) if (!x.paid) b.delete(ref('bonuses', x.id));
+      for (const x of await all('bonuses', W('settled_tx', '==', id))) b.update(ref('bonuses', x.id), { paid: 0, settled_tx: null, transaction_id: x.type === 'advance' ? x.transaction_id || null : null });
+      await b.commit();
+    }
+    if (t.category === 'bonus' && t.party_type === 'employee') {
+      const b = F.writeBatch(db);
+      for (const x of await all('bonuses', W('transaction_id', '==', id))) if (x.type !== 'advance') b.update(ref('bonuses', x.id), { paid: 0, transaction_id: null });
+      await b.commit();
+    }
+    await removeTx(t);
+    if (t.party_type === 'supplier' && t.party_id) await F.updateDoc(ref('suppliers', t.party_id), { balance: inc(t.direction === 'out' ? t.amount : -t.amount) });
+    if (t.ref_type === 'invoice') {
+      const inv = await getRow('invoices', t.ref_id);
+      if (inv) {
+        const paid = r2(inv.paid - t.signed); const status = inv.status === 'cancelled' ? 'cancelled' : invStatus(inv.total, paid);
+        await F.updateDoc(ref('invoices', inv.id), { paid, status, open: ['unpaid', 'partial'].includes(status) });
+        await F.updateDoc(ref('customers', inv.customer_id), { balance: inc(t.signed) });
+        if (inv.work_order_id) await F.updateDoc(ref('work_orders', inv.work_order_id), { invoice_status: status }).catch(() => {});
+      }
+    }
+    if (t.ref_type === 'purchase') {
+      const p = await getRow('purchases', t.ref_id);
+      if (p) { const paid = r2(p.paid - t.amount); await F.updateDoc(ref('purchases', p.id), { paid, status: paid <= 0 ? 'unpaid' : paid + 0.009 >= p.total ? 'paid' : 'partial' }); }
+    }
+    await audit('delete', 'transactions', id, { amount: t.amount, category: t.category, ref: t.ref_type || null });
+    return { ok: true };
+  }
+  route('PUT', '/api/transactions/:id', MONEY, ({ params, body }) => editTx(params.id, body));
+  route('DELETE', '/api/transactions/:id', MONEY, ({ params }) => deleteTx(params.id));
+
   route('POST', '/api/transactions', MONEY, async ({ body }) => {
     if (!['in', 'out'].includes(body.direction)) throw bad('invalid_direction');
     if (!(num(body.amount) > 0)) throw bad('invalid_amount');

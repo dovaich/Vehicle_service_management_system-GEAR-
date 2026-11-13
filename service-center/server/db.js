@@ -391,6 +391,10 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name='extra_role
 if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_type'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_type TEXT DEFAULT 'monthly'");
 if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='pay_cycle'").get()) db.exec("ALTER TABLE employees ADD COLUMN pay_cycle TEXT DEFAULT 'monthly'");
 // per-employee choice: salary by attendance or full, and the employee's own schedule (empty = general settings)
+// payroll payment that settled a bonus / deduction / advance, and the payroll a carried-over advance came from
+for (const c of ['settled_tx', 'carried_from_tx']) {
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('bonuses') WHERE name='${c}'`).get()) db.exec(`ALTER TABLE bonuses ADD COLUMN ${c} INTEGER`);
+}
 for (const c of ['attendance_based', 'work_start', 'work_end', 'weekend_days']) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('employees') WHERE name='${c}'`).get()) db.exec(`ALTER TABLE employees ADD COLUMN ${c} TEXT`);
 }

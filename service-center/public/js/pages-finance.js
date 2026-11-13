@@ -286,7 +286,7 @@
         <section class="card"><h3>${t('items')}</h3>${G.table([{ key: 'kind', render: (i) => t('k_' + i.kind) }, { key: 'description' }, { key: 'technician_name', label: t('technician'), hideMobile: true },
     { key: 'qty', cls: 'num', render: (i) => G.num(i.qty) }, { key: 'unit_price', cls: 'num', render: (i) => G.num(i.unit_price) }, { key: 'amount', cls: 'num', render: (i) => G.money(i.amount) }], inv.items)}</section>
         <div class="grid-2">
-          <section class="card"><h3>${t('payments')}</h3>${G.table([{ key: 'date' }, { key: 'account_name', label: t('account') }, { key: 'method', render: (x) => t('m_' + x.method) }, { key: 'direction', render: (x) => (x.direction === 'out' ? G.badge('refund') : '') }, { key: 'amount', cls: 'num', render: (x) => G.money(x.amount) }, { key: 'user_name', label: t('user'), hideMobile: true }], inv.payments)}</section>
+          <section class="card"><h3>${t('payments')}</h3>${G.table([{ key: 'date' }, { key: 'account_name', label: t('account') }, { key: 'method', render: (x) => t('m_' + x.method) }, { key: 'direction', render: (x) => (x.direction === 'out' ? G.badge('refund') : '') }, { key: 'amount', cls: 'num', render: (x) => G.money(x.amount) }, { key: 'user_name', label: t('user'), hideMobile: true }, { key: 'a', label: '', cls: 'actions-col', render: () => txActions() }], inv.payments)}</section>
           <section class="card totals"><h3>${t('summary')}</h3>
             <div class="trow"><span>${t('labor_total')}</span><b>${G.money(inv.labor_total)}</b></div><div class="trow"><span>${t('parts_total')}</span><b>${G.money(inv.parts_total)}</b></div>
             <div class="trow"><span>${t('subtotal')}</span><b>${G.money(inv.subtotal)}</b></div><div class="trow"><span>${t('discount')}</span><b>- ${G.money(inv.discount)}</b></div>
@@ -297,6 +297,7 @@
         </div>
         ${inv.notes ? `<section class="card"><h3>${t('notes')}</h3><p class="pre">${esc(inv.notes)}</p></section>` : ''}`;
       view.querySelector('[data-print]').onclick = () => G.invoicePrint(inv);
+      G.bindTxActions(view, inv.payments, async () => { inv = await G.get(`/api/invoices/${inv.id}/full`); render(); });
       const payDialog = async (refund) => {
         const accounts = await G.loadAccounts();
         G.formDialog({
@@ -321,6 +322,36 @@
     };
     render();
   }, R.BILL);
+
+  // ---------------- fixing cash movements: edit (account, method, date, amount, description) / delete ----------------
+  const txActions = (cls = '') => (G.can(R.MONEY) ? `<span class="${cls}"><button type="button" class="icon-btn" data-txe title="${t('edit')}">✎</button><button type="button" class="icon-btn danger" data-txd title="${t('delete')}">🗑</button></span>` : '');
+  G.txActions = txActions;
+  G.txEditDialog = async (tr, done) => {
+    const accounts = await G.loadAccounts(true);
+    const salary = tr.category === 'salary';
+    G.formDialog({
+      title: `✎ ${t('edit_movement')} - ${catLabel(tr.category)}`,
+      extra: `<p class="muted">${esc(tr.description || '')}${tr.party_name ? ' · ' + esc(tr.party_name) : ''}</p>${salary ? `<p class="alert">${t('salary_amount_locked_help')}</p>` : ''}`,
+      fields: [
+        { name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, a.name]), noEmpty: true },
+        { name: 'method', type: 'select', options: G.opt(METHODS, 'm_'), noEmpty: true },
+        { name: 'amount', type: 'number', required: true, attrs: salary ? 'readonly' : '' }, { name: 'date', type: 'date' },
+        { name: 'description', span: 2 },
+      ],
+      values: { ...tr, method: tr.method || 'cash' },
+      onSubmit: async (d, close) => { await G.put(`/api/transactions/${tr.id}`, d); close(); G.loadAccounts(true).catch(() => {}); G.toast(t('saved')); done && done(); },
+    });
+  };
+  G.txDelete = async (tr, done) => {
+    const what = tr.ref_type === 'invoice' ? t('txdel_invoice') : tr.ref_type === 'purchase' ? t('txdel_purchase') : tr.ref_type === 'transfer' ? t('txdel_transfer')
+      : tr.ref_type === 'advance' ? t('txdel_advance') : tr.category === 'salary' ? t('txdel_salary') : t('txdel_plain');
+    if (!(await G.confirm(`${t('delete')}: ${catLabel(tr.category)} - ${G.money(tr.amount)} (${tr.account_name || ''})?\n${what}`))) return;
+    try { await G.del(`/api/transactions/${tr.id}`); G.loadAccounts(true).catch(() => {}); G.toast(t('deleted')); done && done(); } catch (e) { G.fail(e); }
+  };
+  G.bindTxActions = (root, rows, done) => {
+    root.querySelectorAll('[data-txe]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); G.txEditDialog(rows[b.closest('tr').dataset.i], done); });
+    root.querySelectorAll('[data-txd]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); G.txDelete(rows[b.closest('tr').dataset.i], done); });
+  };
 
   // ---------------- cash / treasury ----------------
   const catLabel = (c) => t('c_' + c);
@@ -394,11 +425,12 @@
             { key: 'in', label: t('d_in'), cls: 'num', render: (r) => (r.direction === 'in' ? `<b class="pos">${G.money(r.amount)}</b>` : '') },
             { key: 'out', label: t('d_out'), cls: 'num', render: (r) => (r.direction === 'out' ? `<b class="neg">${G.money(r.amount)}</b>` : '') },
             { key: 'user_name', label: t('user'), hideMobile: true },
-            { key: 'a', label: '', render: (r) => (!r.ref_type || r.ref_type === 'transfer' ? '<button class="icon-btn danger" data-delete>🗑</button>' : '') },
+            { key: 'a', label: '', cls: 'actions-col', render: () => txActions() },
           ],
           csvColumns: [{ key: 'date' }, { key: 'account_name', label: t('account') }, { key: 'category', csv: (r) => catLabel(r.category) }, { key: 'description' }, { key: 'party_name', label: t('party') }, { key: 'direction' }, { key: 'amount' }],
           foot: (rows) => { const i = rows.filter((r) => r.direction === 'in').reduce((s, r) => s + r.amount, 0); const o = rows.filter((r) => r.direction === 'out').reduce((s, r) => s + r.amount, 0); return `<tr><td colspan="6" class="hide-m"></td><td class="num" data-label="${t('d_in')}"><b class="pos">${G.money(i)}</b></td><td class="num" data-label="${t('d_out')}"><b class="neg">${G.money(o)}</b></td><td colspan="2" data-label="${t('net')}"><b>${G.money(i - o)}</b></td></tr>`; },
           onSaved: () => loadAccounts(),
+          bind: (el, rows, reload) => G.bindTxActions(el, rows, () => { reload(); loadAccounts(); }),
         });
         reloadTx = lp.reload;
       } else {

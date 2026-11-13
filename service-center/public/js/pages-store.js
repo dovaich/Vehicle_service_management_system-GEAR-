@@ -274,7 +274,7 @@
         ${G.can(R.MGMT) ? `<button class="btn btn-danger" data-del>🗑 ${t('delete')}</button>` : ''}</div></div>
       <div class="card info-grid">${G.info(t('supplier'), `<a href="#/suppliers/${d.supplier_id}">${esc(d.supplier_name)}</a>`, true)}${G.info(t('supplier_invoice_no'), d.supplier_invoice_no)}${G.info(t('date'), d.date)}${G.info(t('notes'), d.notes)}</div>
       <section class="card"><h3>${t('items')}</h3>${G.table([{ key: 'part_no' }, { key: 'name', label: t('part'), render: (i) => esc(G.tl(i.name_ar, i.name_en)) }, { key: 'qty', cls: 'num' }, { key: 'unit_cost', cls: 'num', render: (i) => G.num(i.unit_cost) }, { key: 'amount', cls: 'num', render: (i) => G.money(i.amount) }], d.items)}</section>
-      <div class="grid-2"><section class="card"><h3>${t('payments')}</h3>${G.table([{ key: 'date' }, { key: 'account_name', label: t('account') }, { key: 'amount', cls: 'num', render: (x) => G.money(x.amount) }], d.payments)}</section>
+      <div class="grid-2"><section class="card"><h3>${t('payments')}</h3>${G.table([{ key: 'date' }, { key: 'account_name', label: t('account') }, { key: 'method', render: (x) => (x.method ? t('m_' + x.method) : '') }, { key: 'amount', cls: 'num', render: (x) => G.money(x.amount) }, { key: 'a', label: '', cls: 'actions-col', render: () => G.txActions() }], d.payments)}</section>
       <section class="card totals"><div class="trow"><span>${t('subtotal')}</span><b>${G.money(d.subtotal)}</b></div><div class="trow"><span>${t('discount')}</span><b>${G.money(d.discount)}</b></div><div class="trow"><span>${t('vat')}</span><b>${G.money(d.tax)}</b></div>
         <div class="trow big"><span>${t('total')}</span><b>${G.money(d.total)}</b></div><div class="trow"><span>${t('paid')}</span><b>${G.money(d.paid)}</b></div><div class="trow big"><span>${t('due')}</span><b class="${due > 0 ? 'neg' : ''}">${G.money(due)}</b></div></section></div>`;
     const pb = view.querySelector('[data-pay]');
@@ -287,5 +287,6 @@
     };
     const db = view.querySelector('[data-del]');
     if (db) db.onclick = () => G.deletePurchase(d, () => { location.hash = '#/purchases'; });
+    G.bindTxActions(view, d.payments, () => G.route());
   }, R.SUPP);
 })();

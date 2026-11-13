@@ -57,8 +57,8 @@ service cloud.firestore {
       allow read: if hasRole(MONEY()) || (hasRole(['advisor']) && resource.data.ref_type == 'invoice');
       allow create: if hasRole(MONEY()) || (hasRole(['advisor']) && request.resource.data.ref_type == 'invoice');
       allow delete: if hasRole(MONEY());
-      // only re-pointing a payment to another customer when an invoice is edited
-      allow update: if hasRole(MONEY()) && onlyChanges(['party_id', 'party_name']);
+      // fixing a movement (account, method, date, amount, description) or re-pointing it to another customer
+      allow update: if hasRole(MONEY());
     }
     match /bonuses/{id} { allow read, write: if hasRole(MONEY()); }
 
