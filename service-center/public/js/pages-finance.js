@@ -572,7 +572,7 @@
             { key: 'deductions', cls: 'num', render: (r) => `<span class="neg">${G.money(r.deductions)}</span>` },
             { key: 'advances', cls: 'num', render: (r) => (r.advances ? `<span class="neg">${G.money(r.advances)}</span>` : '-') },
             { key: 'net', cls: 'num', render: (r) => `<b class="${r.net < 0 ? 'neg' : ''}">${G.money(r.net)}</b>` },
-            { key: 'a', label: '', cls: 'actions-wide', render: (r) => `${owed(r) ? `<button class="btn btn-sm btn-primary" data-pay>💵 ${r.net > 0 ? t('pay') : t('settle')}</button>` : '<span class="badge b-done">✔</span>'}
+            { key: 'a', label: '', cls: 'actions-wide', render: (r) => `${owed(r) ? `<button class="btn btn-sm btn-primary" data-pay>💵 ${r.net > 0 ? t('pay') : t('settle')}</button>` : `<span class="badge b-done">✔</span> <button class="btn btn-sm" data-pay title="${t('pay_custom_help')}">💵 ${t('pay')}</button>`}
               <button class="btn btn-sm" data-adv>${t('advance')}</button>` },
           ], rows, { foot: `<tr><td colspan="8" data-label=""></td><td class="num" data-label="${t('net')}"><b>${G.money(rows.reduce((s, r) => s + Math.max(0, r.net), 0))}</b></td><td></td></tr>` });
           body.querySelectorAll('[data-adv]').forEach((b) => b.onclick = () => G.advanceDialog(rows[b.closest('tr').dataset.i].employee_id, load));
@@ -589,9 +589,26 @@
                 <div class="trow"><span>${t('advances')}</span><b class="neg">- ${G.money(r.advances)}</b></div>
                 <div class="trow big"><span>${t('cash_to_pay')}</span><b>${G.money(Math.max(0, r.net))}</b></div>
                 ${r.net < 0 ? `<p class="alert">${t('advance_carry')}: ${G.money(-r.net)}</p>` : ''}</div>`,
-              fields: [{ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true }],
-              onSubmit: async (d, close) => { await G.post('/api/payroll/pay', { employee_id: r.employee_id, account_id: d.account_id, period }); close(); G.toast(t('saved')); load(); },
+              fields: [{ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true },
+                { name: 'amount', label: t('pay_amount'), type: 'number', attrs: 'min="0" step="0.01"', help: t('pay_custom_help') }],
+              values: { amount: Math.max(0, r.net) },
+              onSubmit: async (d, close) => {
+                const body = { employee_id: r.employee_id, account_id: d.account_id, period };
+                // send the amount only when it was changed, so the default stays the exact computed net
+                if (d.amount !== '' && d.amount !== null && d.amount !== undefined && Math.abs(Number(d.amount) - Math.max(0, r.net)) > 0.009) body.amount = Number(d.amount);
+                else if (!owed(r)) return G.toast(t('pay_amount'));
+                await G.post('/api/payroll/pay', body); close(); G.toast(t('saved')); load();
+              },
             });
+            const amt = document.querySelector('.modal [name=amount], dialog [name=amount]');
+            if (amt) {
+              const note = document.createElement('b'); note.className = 'pay-note'; note.style.display = 'block'; amt.after(note);
+              const upd = () => {
+                const v = Number(amt.value || 0); const due = Math.max(0, r.net); const diff = Math.round((v - due) * 100) / 100;
+                note.textContent = amt.value === '' || Math.abs(diff) < 0.01 ? '' : diff < 0 ? `${t('pay_rest_due')}: ${G.money(-diff)}` : `${t('pay_extra')}: ${G.money(diff)}`;
+              };
+              amt.oninput = upd; upd();
+            }
           });
         };
         body.querySelectorAll('[name=period],[name=week_day],[name=cycle]').forEach((i) => i.onchange = () => load().catch(G.fail));

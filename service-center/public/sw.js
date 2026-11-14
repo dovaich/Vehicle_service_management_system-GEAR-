@@ -1,5 +1,5 @@
 /* GEAR service worker: cache the app shell; API calls always go to the network */
-const CACHE = 'gear-v4';
+const CACHE = 'gear-v5';
 const SHELL = ['/', '/css/app.css', '/js/i18n.js', '/js/core.js', '/js/app.js', '/js/pages-front.js', '/js/pages-workshop.js',
   '/js/pages-finance.js', '/js/pages-store.js', '/js/pages-admin.js', '/js/pages-hr.js', '/js/fb-backend.js', '/js/payroll-calc.js', '/js/vendor/firebase.mjs', '/firebase-config.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });

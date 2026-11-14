@@ -1032,18 +1032,20 @@ function init() {
     // one net payment: salary + bonuses - deductions - advances
     const salaryDue = Math.max(0, r2(rowp.salary_due - rowp.salary_paid));
     const adj = r2(rowp.bonuses - rowp.deductions - rowp.advances);
-    if (!salaryDue && !adj) return { ok: true, nothing: true };
-    const cash = r2(salaryDue + adj);
-    const t = await addTx({ account_id, direction: 'out', amount: Math.max(0, cash), category: 'salary', description: `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${rowp.bonuses} - ${rowp.deductions} - ${rowp.advances})`, party_type: 'employee', party_id: e.id, period, salary_part: salaryDue });
+    const custom = body.amount !== undefined && body.amount !== null && body.amount !== '';
+    if (!salaryDue && !adj && !custom) return { ok: true, nothing: true };
+    let sp;
+    try { sp = PAY.paySplit(salaryDue, adj, custom ? body.amount : undefined); } catch (err) { throw bad('invalid_amount'); }
+    const t = await addTx({ account_id, direction: 'out', amount: sp.pay, category: 'salary', description: `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${rowp.bonuses} - ${rowp.deductions} - ${rowp.advances})${custom ? ' / paid ' + sp.pay : ''}`, party_type: 'employee', party_id: e.id, period, salary_part: sp.salary_part });
     const b = F.writeBatch(db);
     for (const x of await all('bonuses', W('employee_id', '==', e.id), W('paid', '==', 0))) b.update(ref('bonuses', x.id), { paid: 1, settled_tx: t.id, transaction_id: x.type === 'advance' && x.transaction_id ? x.transaction_id : t.id });
-    if (cash < 0) {
-      const cref = newRef('bonuses');
-      b.set(cref, { employee_id: e.id, employee_name: e.name, job: e.job || null, date: today(), period, type: 'advance', amount: -cash, reason: `Carried over from ${PAY.periodLabel(period)}`, paid: 0, transaction_id: null, carried_from_tx: t.id, created_at: nowStr(), kw: keywords(e.name, 'carried') });
+    for (const [type, amt] of [['advance', sp.carry_advance], ['bonus', sp.carry_bonus]]) {
+      if (!amt) continue;
+      b.set(newRef('bonuses'), { employee_id: e.id, employee_name: e.name, job: e.job || null, date: today(), period, type, amount: amt, reason: `Carried over from ${PAY.periodLabel(period)}`, paid: 0, transaction_id: null, carried_from_tx: t.id, created_at: nowStr(), kw: keywords(e.name, 'carried') });
     }
     await b.commit();
-    await audit('payroll', 'employees', e.id, { period, cash });
-    return { ok: true, paid: Math.max(0, cash), carried: cash < 0 ? -cash : 0 };
+    await audit('payroll', 'employees', e.id, { period, cash: sp.pay });
+    return { ok: true, paid: sp.pay, carried: sp.carry_advance, salary_part: sp.salary_part };
   }
 
   // ------------------------------------------------------------------ dashboard & reports

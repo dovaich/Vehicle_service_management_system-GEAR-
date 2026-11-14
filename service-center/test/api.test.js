@@ -535,6 +535,24 @@ test('full service-center flow', async () => {
   await call('DELETE', `/api/transactions/${salTx2.id}`);
   const open2 = (await call('GET', `/api/bonuses?employee_id=${pe2.id}&paid=0`)).rows;
   assert.equal(open2.length, 1); assert.equal(open2[0].amount, 1300, 'back to the original advance, no carried copy');
+  // pay a chosen amount: less -> the rest stays owed for the period; more -> recorded as extra salary
+  const pc = await call('POST', '/api/employees', { name: 'Custom Pay', job: 'technician', salary: 3000 });
+  await call('POST', '/api/bonuses', { employee_id: pc.id, type: 'bonus', amount: 200 });
+  let a1c = await balOf(A1);
+  await call('POST', '/api/payroll/pay', { employee_id: pc.id, account_id: A1, period: '2027-01', amount: 1000 });
+  assert.equal(await balOf(A1), Math.round((a1c - 1000) * 100) / 100);
+  let crow = (await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === pc.id);
+  assert.equal(crow.salary_paid, 800); assert.equal(crow.bonuses, 0); assert.equal(crow.net, 2200, 'rest still owed');
+  await call('POST', '/api/payroll/pay', { employee_id: pc.id, account_id: A1, period: '2027-01', amount: 2500 });
+  crow = (await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === pc.id);
+  assert.equal(crow.salary_paid, 3300); assert.equal(crow.net, -300, 'paid 300 over the salary');
+  await call('POST', '/api/payroll/pay', { employee_id: pc.id, account_id: A1, period: '2027-01', amount: -5 }, { expect: 400 });
+  // less than the bonuses -> the unpaid bonus is carried
+  const pb = await call('POST', '/api/employees', { name: 'Bonus Carry', job: 'technician', salary: 0, active: 1 });
+  await call('POST', '/api/bonuses', { employee_id: pb.id, type: 'bonus', amount: 500 });
+  await call('POST', '/api/payroll/pay', { employee_id: pb.id, account_id: A1, period: '2027-01', amount: 200 });
+  crow = (await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === pb.id);
+  assert.equal(crow.bonuses, 300); assert.equal(crow.net, 300);
   // purchase payment delete -> purchase unpaid again
   const fixPo = await call('POST', '/api/purchases', { supplier_id: sup.id, items: [{ new_name: 'Fix po part', qty: 1, unit_cost: 100 }], payment: { amount: 100, account_id: A1 } });
   assert.equal(fixPo.status, 'paid');

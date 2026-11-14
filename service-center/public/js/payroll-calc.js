@@ -142,5 +142,21 @@
     return res;
   }
 
-  return { calc, config, empConfig, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
+  // how one payroll payment splits. salaryDue = salary still owed for the period, adj = bonuses - deductions - advances,
+  // amount = what is actually handed over (empty = the computed net). Paying less leaves the rest of the salary owed
+  // (or, if even the bonuses are not covered, carries them over); paying more counts as extra salary for the period.
+  function paySplit(salaryDue, adj, amount) {
+    const cash = r2(salaryDue + adj);
+    const res = { pay: Math.max(0, cash), salary_part: r2(salaryDue), carry_advance: cash < 0 ? r2(-cash) : 0, carry_bonus: 0 };
+    if (amount === undefined || amount === null || amount === '') return res;
+    const A = r2(amount);
+    if (!(A >= 0) || isNaN(Number(amount))) throw Object.assign(new Error('invalid_amount'), { code: 'invalid_amount' });
+    const extra = r2(A - res.pay);
+    res.pay = A;
+    if (extra >= 0) { res.salary_part = r2(salaryDue + extra); return res; }
+    res.salary_part = r2(salaryDue + extra);
+    if (res.salary_part < 0) { res.carry_bonus = r2(-res.salary_part); res.salary_part = 0; }
+    return res;
+  }
+  return { paySplit, calc, config, empConfig, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
 }));
