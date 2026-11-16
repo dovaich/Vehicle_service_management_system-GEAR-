@@ -207,7 +207,30 @@ test('full service-center flow', async () => {
   assert.deepEqual(me2.user.roles.sort(), ['accountant', 'storekeeper']);
   await call('POST', '/api/stock/adjust', { part_id: oil.id, type: 'in', qty: 1 });
   await call('GET', '/api/accounts'); // still an accountant
+  // private box: the accountant can transfer into it, but sees neither its balance nor its movements
+  const accList = (await call('GET', '/api/accounts')).rows;
+  assert.equal(accList.find((a) => a.id === priv.id).balance, null, 'private balance hidden');
+  assert.ok(accList.find((a) => a.id === cash.id).balance !== null);
+  await call('POST', '/api/transfer', { from: cash.id, to: priv.id, amount: 10 });
+  await call('POST', '/api/transfer', { from: priv.id, to: cash.id, amount: 5 }, { expect: 403 });
+  await call('POST', '/api/transactions', { account_id: priv.id, direction: 'out', amount: 5, category: 'other' }, { expect: 403 });
+  const accTx = (await call('GET', '/api/transactions?limit=2000')).rows;
+  assert.ok(!accTx.some((x) => x.account_id === priv.id), 'private movements hidden');
+  assert.equal((await call('GET', `/api/transactions?account_id=${priv.id}`)).total, 0);
+  const privTx = (await call('GET', `/api/transactions?category=transfer&account_id=${cash.id}`)).rows[0];
+  await call('POST', '/api/accounts', { name: 'Sneaky', in_reports: 0 }, { expect: 403 });
+  await call('PUT', `/api/accounts/${priv.id}`, { name: 'x' }, { expect: 403 });
+  await call('PUT', `/api/transactions/${privTx.id}`, { account_id: priv.id }, { expect: 400 });
   cookie = adminCookie;
+  const privRows = (await call('GET', `/api/transactions?account_id=${priv.id}`)).rows;
+  assert.equal((await call('GET', `/api/accounts/${priv.id}`)).balance, 40);
+  await call('POST', '/api/payroll/pay', { employee_id: tech.id, account_id: priv.id, period: '2027-05' }, { expect: 400 }); // payments use book boxes
+  // the accountant may still undo their transfer from the main-cash side
+  await call('POST', '/api/auth/login', { username: 'acc1', password: 'secret1' });
+  await call('DELETE', `/api/transactions/${privRows.find((x) => x.amount === 10).id}`, undefined, { expect: 403 });
+  await call('DELETE', `/api/transactions/${privTx.id}`);
+  cookie = adminCookie;
+  assert.equal((await call('GET', `/api/accounts/${priv.id}`)).balance, 30);
   const urows = (await call('GET', '/api/users')).rows;
   assert.equal(urows.find((u) => u.username === 'acc1').extra_roles, 'storekeeper');
 

@@ -327,7 +327,9 @@
   const txActions = (cls = '') => (G.can(R.MONEY) ? `<span class="${cls}"><button type="button" class="icon-btn" data-txe title="${t('edit')}">✎</button><button type="button" class="icon-btn danger" data-txd title="${t('delete')}">🗑</button></span>` : '');
   G.txActions = txActions;
   G.txEditDialog = async (tr, done) => {
-    const accounts = await G.loadAccounts(true);
+    const all = await G.loadAccounts(true, true);
+    const inPriv = G.isPrivAcc(all.find((a) => String(a.id) === String(tr.account_id)));
+    const accounts = all.filter((a) => (inPriv ? String(a.id) === String(tr.account_id) : !G.isPrivAcc(a)));
     const salary = tr.category === 'salary';
     G.formDialog({
       title: `✎ ${t('edit_movement')} - ${catLabel(tr.category)}`,
@@ -356,14 +358,14 @@
   // ---------------- cash / treasury ----------------
   const catLabel = (c) => t('c_' + c);
   G.txDialog = async (direction, done) => {
-    const accounts = await G.loadAccounts(true);
+    const accounts = await G.loadAccounts(true, G.can(R.ADMIN));
     const cats = direction === 'in' ? INCOME_CATS : EXPENSE_CATS;
     await G.loadEmployees();
     G.formDialog({
       title: direction === 'in' ? t('add_income') : t('add_expense'),
       fields: [
         { name: 'amount', type: 'number', required: true }, { name: 'date', type: 'date', default: G.today() },
-        { name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true },
+        { name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, G.accLabel(a)]), noEmpty: true },
         { name: 'category', type: 'select', options: cats.map((c) => [c, catLabel(c)]), required: true, noEmpty: true },
         { name: 'party_id', label: t('employee') + ' (' + G.tl('اختياري', 'optional') + ')', type: 'select', options: G.empOptions() },
         { name: 'method', type: 'select', options: G.opt(METHODS, 'm_'), default: 'cash', noEmpty: true },
@@ -383,13 +385,20 @@
         <button class="btn" data-transfer>⇄ ${t('transfer')}</button>${G.can(R.MGMT) ? `<button class="btn" data-acc>＋ ${t('new_account')}</button>` : ''}</div></div>
       <div class="kpis" data-accounts></div><div data-tabs></div>`;
     const loadAccounts = async () => {
-      const accs = await G.loadAccounts(true);
-      view.querySelector('[data-accounts]').innerHTML = accs.map((a) => `<div class="kpi ${a.balance < 0 ? 'bad' : ''}"><span class="kpi-i">${{ cash: '💵', bank: '🏦', pos: '💳', wallet: '📱' }[a.type] || '💰'}</span><div><small>${esc(a.name)}</small><b>${G.money(a.balance)}</b>${Number(a.in_reports ?? 1) === 0 ? `<span class="badge b-new" title="${t('in_reports_help')}">🔒 ${t('off_books')}</span>` : ''}</div>${G.can(R.MGMT) ? `<button class="icon-btn" data-edit-acc="${a.id}">✎</button>` : ''}</div>`).join('');
+      const accs = await G.loadAccounts(true, true);
+      const hidden = (a) => a.balance === null || a.balance === undefined;
+      view.querySelector('[data-accounts]').innerHTML = accs.map((a) => `<div class="kpi ${a.balance < 0 ? 'bad' : ''}" ${G.isPrivAcc(a) && !hidden(a) ? `data-acc-filter="${a.id}" style="cursor:pointer"` : ''}><span class="kpi-i">${{ cash: '💵', bank: '🏦', pos: '💳', wallet: '📱' }[a.type] || '💰'}</span><div><small>${esc(a.name)}</small><b>${hidden(a) ? '🔒' : G.money(a.balance)}</b>${G.isPrivAcc(a) ? `<span class="badge b-new" title="${t('in_reports_help')}">🔒 ${t('off_books')}</span>` : ''}</div>${G.can(R.MGMT) && (!G.isPrivAcc(a) || G.can(R.ADMIN)) ? `<button class="icon-btn" data-edit-acc="${a.id}">✎</button>` : ''}</div>`).join('');
+      // the admin opens a private box's movements by tapping its card
+      view.querySelectorAll('[data-acc-filter]').forEach((c) => c.onclick = (e) => {
+        if (e.target.closest('[data-edit-acc]')) return;
+        const sel = view.querySelector('[data-tabs] select[name=account_id]');
+        if (sel) { sel.value = c.dataset.accFilter; sel.dispatchEvent(new Event('change', { bubbles: true })); sel.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      });
       view.querySelectorAll('[data-edit-acc]').forEach((b) => b.onclick = () => accDialog(accs.find((a) => String(a.id) === b.dataset.editAcc)));
     };
     const accDialog = (a = {}) => G.formDialog({
       title: a.id ? t('edit') : t('new_account'),
-      fields: [{ name: 'name', required: true, span: 2 }, { name: 'type', type: 'select', options: G.opt(['cash', 'bank', 'pos', 'wallet'], 'acc_'), noEmpty: true }, { name: 'opening_balance', type: 'number' }, { name: 'active', type: 'checkbox', default: 1 }, { name: 'in_reports', type: 'checkbox', default: 1, span: 2, help: t('in_reports_help') }],
+      fields: [{ name: 'name', required: true, span: 2 }, { name: 'type', type: 'select', options: G.opt(['cash', 'bank', 'pos', 'wallet'], 'acc_'), noEmpty: true }, { name: 'opening_balance', type: 'number' }, { name: 'active', type: 'checkbox', default: 1 }, ...(G.can(R.ADMIN) ? [{ name: 'in_reports', type: 'checkbox', default: 1, span: 2, help: t('in_reports_help') }] : [])],
       values: a,
       onSubmit: async (d, close) => { if (a.id) await G.put(`/api/accounts/${a.id}`, d); else await G.post('/api/accounts', d); close(); refreshAll(); },
     });
@@ -399,17 +408,19 @@
     view.querySelector('[data-out]').onclick = () => G.txDialog('out', refreshAll);
     const ab = view.querySelector('[data-acc]'); if (ab) ab.onclick = () => accDialog();
     view.querySelector('[data-transfer]').onclick = async () => {
-      const accs = await G.loadAccounts(true);
-      const opts = accs.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]);
+      const accs = await G.loadAccounts(true, true);
+      const opts = accs.map((a) => [a.id, G.accLabel(a)]);
+      // money goes into a private box from anyone, but only the admin takes it out
+      const fromOpts = accs.filter((a) => !G.isPrivAcc(a) || G.can(R.ADMIN)).map((a) => [a.id, G.accLabel(a)]);
       G.formDialog({
         title: t('transfer'),
-        fields: [{ name: 'from', label: t('from_account'), type: 'select', options: opts, required: true }, { name: 'to', label: t('to_account'), type: 'select', options: opts, required: true },
+        fields: [{ name: 'from', label: t('from_account'), type: 'select', options: fromOpts, required: true }, { name: 'to', label: t('to_account'), type: 'select', options: opts, required: true },
           { name: 'amount', type: 'number', required: true }, { name: 'date', type: 'date', default: G.today() }, { name: 'description', span: 2 }],
         onSubmit: async (d, close) => { await G.post('/api/transfer', d); close(); G.toast(t('saved')); refreshAll(); },
       });
     };
     await loadAccounts();
-    const accs = G.cache.accounts;
+    const accs = G.cache.accounts.filter((a) => !G.isPrivAcc(a) || G.can(R.ADMIN));
     const allCats = ['invoice_payment', 'refund', 'supplier_payment', 'supplier_refund', 'transfer', 'advance', ...EXPENSE_CATS, ...INCOME_CATS];
     G.tabs(view.querySelector('[data-tabs]'), [['tx', t('transactions')], ['daily', t('daily_closing')]], async (k, body) => {
       if (k === 'tx') {

@@ -79,6 +79,13 @@ function init() {
   const authReady = new Promise((resolve) => { const un = F.onAuthStateChanged(auth, async (u) => { un(); await loadMe(u); resolve(); }); });
   const hasAny = (roles) => !!me && me.roles.some((r) => roles.includes(r));
   const onlyIn = (roles) => !!me && me.roles.every((r) => roles.includes(r));
+  // private boxes (accounts.in_reports = 0): their movements live in private_tx and their balance in private_balances,
+  // both readable by the admin only (firestore.rules). Others may only transfer money into them.
+  const isAdmin = () => hasAny(['admin']);
+  const PRIV_TX = 'private_tx'; const PRIV_BAL = 'private_balances';
+  const isPriv = (a) => !!a && a.in_reports !== undefined && a.in_reports !== null && Number(a.in_reports) === 0;
+  const privLegId = (refId, dir) => `pt_${refId}_${dir}`;
+  const flip = (dir) => (dir === 'in' ? 'out' : 'in');
   const parseRoles = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map((x) => String(x).trim()).filter((x) => ROLES.includes(x));
   const publicMe = () => ({ id: me.id, username: me.username, name: me.name, role: me.role, roles: me.roles, employee_id: me.employee_id });
   const need = (roles) => { if (!me) throw new ApiError(401, 'unauthorized'); if (!hasAny(roles)) throw new ApiError(403, 'forbidden'); };
@@ -265,9 +272,32 @@ function init() {
     accounts: {
       cols: ['name', 'type', 'opening_balance', 'active', 'in_reports'], required: ['name'], kw: (r) => [r.name], order: ['created_at', 'asc'], small: true, filters: ['active'],
       read: MONEY, write: MGMT, numeric: ['opening_balance', 'active', 'in_reports'], defaults: { active: 1, type: 'cash', in_reports: 1 },
-      onCreate: (d) => { d.balance = num(d.opening_balance); },
-      onUpdate: (d, old) => { if (d.opening_balance !== undefined) d.balance = inc(r2(num(d.opening_balance) - num(old.opening_balance))); },
-      async beforeDelete(id) { if ((await all('transactions', W('account_id', '==', id), L(1))).length) throw bad('account_has_transactions'); },
+      async beforeSave(d, old) {
+        if (isAdmin()) return;
+        if (old && isPriv(old)) throw new ApiError(403, 'private_account');
+        if (d.in_reports !== undefined && Number(d.in_reports ?? 1) !== (old ? Number(old.in_reports ?? 1) : 1)) throw new ApiError(403, 'private_account');
+      },
+      onCreate: (d) => { if (isPriv(d)) { d.balance = 0; d.priv_ok = 1; } else d.balance = num(d.opening_balance); },
+      onUpdate: (d, old) => { if (d.opening_balance !== undefined && !(isPriv(old) && old.priv_ok)) d.balance = inc(r2(num(d.opening_balance) - num(old.opening_balance))); },
+      async afterCreate(id, d) { if (isPriv(d)) await F.setDoc(ref(PRIV_BAL, id), { balance: num(d.opening_balance) }); },
+      async afterUpdate(id, merged, old) {
+        if (isPriv(old) && old.priv_ok && merged.opening_balance !== old.opening_balance) await F.setDoc(ref(PRIV_BAL, id), { balance: inc(r2(num(merged.opening_balance) - num(old.opening_balance))) }, { merge: true });
+        if (Number(merged.in_reports ?? 1) !== Number(old.in_reports ?? 1)) await syncPrivacy(id);
+      },
+      async beforeDelete(id, a) {
+        if (isPriv(a) && !isAdmin()) throw new ApiError(403, 'private_account');
+        if ((await all('transactions', W('account_id', '==', id), L(1))).length) throw bad('account_has_transactions');
+        if (isPriv(a) && (await all(PRIV_TX, W('account_id', '==', id), L(1))).length) throw bad('account_has_transactions');
+      },
+      async afterDelete(id, a) { if (isPriv(a)) await F.deleteDoc(ref(PRIV_BAL, id)).catch(() => {}); },
+      // the admin sees a private box's balance; everyone else sees it locked
+      async post(rows) {
+        for (const a of rows.filter(isPriv)) {
+          if (isAdmin()) { const pb = await getRow(PRIV_BAL, a.id).catch(() => null); a.balance = r2(num(a.balance) + num(pb && pb.balance)); }
+          else { a.balance = null; a.opening_balance = null; }
+        }
+        return rows;
+      },
     },
     transactions: {
       cols: ['date', 'account_id', 'direction', 'amount', 'category', 'description', 'method', 'party_type', 'party_id'], required: ['account_id', 'direction', 'amount', 'category'],
@@ -344,6 +374,12 @@ function init() {
   // list with Firestore-friendly queries (no composite indexes needed except those in firestore.indexes.json)
   const cursors = new Map();
   async function listResource(name, def, qs) {
+    let col = name;
+    if (name === 'transactions' && qs.account_id) {
+      const acc = await getRow('accounts', qs.account_id).catch(() => null);
+      if (isPriv(acc)) { if (!isAdmin()) return { rows: [], total: 0 }; col = PRIV_TX; }
+    }
+    const colName = () => col;
     const filters = (def.filters || []).filter((k) => qs[k] !== undefined && qs[k] !== '');
     const fval = (k) => { const v = qs[k]; return ['active', 'paid', 'is_return'].includes(k) ? Number(v) : v; };
     const lim = Math.min(num(qs.limit, 100), 2000);
@@ -384,14 +420,15 @@ function init() {
       rows = rows.slice(offset, offset + lim);
     }
     rows.forEach((r) => { delete r.kw; decorate(name, r); });
+    if (def.post) await def.post(rows);
     return { rows: hide(def, rows), total };
   }
-  const colName = (name) => name;
 
   async function getResource(name, id) {
     const def = RES[name];
-    const r = await mustRow(name, id);
-    delete r.kw;
+    const r = name === 'transactions' ? await findTx(id) : await mustRow(name, id);
+    delete r.kw; delete r._col;
+    if (def.post) await def.post([r]);
     return hide(def, [decorate(name, r)])[0];
   }
   function pick(body, cols) { const o = {}; for (const c of cols) if (body[c] !== undefined) o[c] = body[c] === '' ? null : body[c]; return o; }
@@ -449,8 +486,62 @@ function init() {
     return { ok: true };
   }
   async function removeTx(t) {
+    if (t._col === PRIV_TX) {
+      const b = F.writeBatch(db);
+      b.delete(ref(PRIV_TX, t.id));
+      b.set(ref(PRIV_BAL, t.account_id), { balance: inc(t.direction === 'in' ? -t.amount : t.amount) }, { merge: true });
+      return b.commit();
+    }
     await F.deleteDoc(ref('transactions', t.id));
     await F.updateDoc(ref('accounts', t.account_id), { balance: inc(t.direction === 'in' ? -t.amount : t.amount) });
+  }
+  // a movement from the books, or (admin only) from a private box
+  async function findTx(id) {
+    const t = await getRow('transactions', id);
+    if (t) return t;
+    if (isAdmin()) { const p = await getRow(PRIV_TX, id); if (p) return { ...p, _col: PRIV_TX }; }
+    throw new ApiError(404, 'not_found');
+  }
+  // the private leg of a transfer, written / changed / removed without reading it (the accountant cannot read private boxes)
+  const privLeg = (t) => (t.peer_private && t.peer_account_id ? { id: privLegId(t.ref_id, flip(t.direction)), account_id: t.peer_account_id, direction: flip(t.direction) } : null);
+  // move a box's movements and balance in / out of the private collections when the admin changes "counts in the books"
+  async function syncPrivacy(id) {
+    if (!isAdmin()) return;
+    const a = await getRow('accounts', id); if (!a) return;
+    const want = isPriv(a); const now = Number(a.priv_ok || 0) === 1;
+    if (want === now) return;
+    const from = want ? 'transactions' : PRIV_TX; const to = want ? PRIV_TX : 'transactions';
+    const txs = await all(from, W('account_id', '==', id));
+    for (let i = 0; i < txs.length; i += 120) {
+      const b = F.writeBatch(db);
+      for (const t of txs.slice(i, i + 120)) {
+        const { id: oldId, ...data } = t;
+        const isTr = t.ref_type === 'transfer' && t.ref_id;
+        const nr = want ? (isTr ? ref(PRIV_TX, privLegId(t.ref_id, t.direction)) : ref(PRIV_TX, oldId)) : (isTr ? newRef('transactions') : ref('transactions', oldId));
+        b.set(nr, data); b.delete(ref(from, oldId));
+        if (isTr) for (const o of await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))) {
+          if (o.id === oldId) continue;
+          b.update(ref('transactions', o.id), want ? { peer_private: 1, peer_account_id: id } : { peer_private: 0, peer_account_id: null });
+        }
+      }
+      await b.commit();
+    }
+    if (want) {
+      const b = F.writeBatch(db);
+      b.set(ref(PRIV_BAL, id), { balance: inc(num(a.balance)) }, { merge: true });
+      b.update(ref('accounts', id), { balance: 0, priv_ok: 1 });
+      await b.commit();
+    } else {
+      const pb = await getRow(PRIV_BAL, id);
+      await F.updateDoc(ref('accounts', id), { balance: inc(num(pb && pb.balance)), priv_ok: 0 });
+      await F.deleteDoc(ref(PRIV_BAL, id)).catch(() => {});
+    }
+  }
+  let privSynced = false;
+  async function syncAllPrivacy() {
+    if (privSynced || !isAdmin()) return;
+    privSynced = true;
+    for (const a of await all('accounts')) if (isPriv(a) !== (Number(a.priv_ok || 0) === 1)) await syncPrivacy(a.id);
   }
 
   // ------------------------------------------------------------------ stock
@@ -478,8 +569,13 @@ function init() {
   }
 
   // ------------------------------------------------------------------ transactions (cash)
-  async function addTx(t) {
+  async function addTx(t, opts = {}) {
     const acc = await mustRow('accounts', t.account_id);
+    const priv = isPriv(acc);
+    if (priv) {
+      if (!opts.allowPrivate) throw bad('private_account');
+      if (!isAdmin() && !(t.category === 'transfer' && t.direction === 'in')) throw new ApiError(403, 'private_account');
+    }
     let partyName = null;
     if (t.party_type && t.party_id) partyName = ((await getRow(t.party_type === 'employee' ? 'employees' : t.party_type === 'supplier' ? 'suppliers' : 'customers', t.party_id)) || {}).name || null;
     const d = clean({
@@ -487,12 +583,14 @@ function init() {
       category: t.category, description: t.description || null, ref_type: t.ref_type || null, ref_id: t.ref_id ? String(t.ref_id) : null, party_type: t.party_type || null,
       party_id: t.party_id ? String(t.party_id) : null, party_name: partyName, method: t.method || null, period: t.period || null, salary_part: t.salary_part ?? null, user_id: me.id, user_name: me.name, created_at: nowStr(),
       is_expense: t.direction === 'out' && !['transfer', 'supplier_payment', 'refund'].includes(t.category),
+      peer_private: t.peer_private ? 1 : undefined, peer_account_id: t.peer_private ? String(t.peer_account_id) : undefined,
     });
     d.kw = keywords(d.description, d.category, d.account_name, d.party_name);
-    const r = newRef('transactions');
+    const r = priv ? (d.ref_type === 'transfer' ? ref(PRIV_TX, privLegId(d.ref_id, d.direction)) : newRef(PRIV_TX)) : newRef('transactions');
     const b = F.writeBatch(db);
     b.set(r, d);
-    b.update(ref('accounts', d.account_id), { balance: inc(d.signed) });
+    if (priv) b.set(ref(PRIV_BAL, acc.id), { balance: inc(d.signed) }, { merge: true });
+    else b.update(ref('accounts', d.account_id), { balance: inc(d.signed) });
     if (d.party_type === 'supplier' && d.party_id) b.update(ref('suppliers', d.party_id), { balance: inc(d.direction === 'out' ? -d.amount : d.amount) });
     await b.commit();
     return { ...d, id: r.id };
@@ -1200,7 +1298,7 @@ function init() {
       return { id: uid };
     } finally { await F.deleteApp(second).catch(() => {}); }
   }
-  const BACKUP_COLS = ['settings', 'users', 'attendance', 'customers', 'vehicles', 'employees', 'service_types', 'appointments', 'receptions', 'diagnoses', 'work_orders', 'suppliers', 'parts', 'stock_moves', 'purchases', 'invoices', 'accounts', 'transactions', 'bonuses', 'reminders', 'counters'];
+  const BACKUP_COLS = ['settings', 'users', 'attendance', 'customers', 'vehicles', 'employees', 'service_types', 'appointments', 'receptions', 'diagnoses', 'work_orders', 'suppliers', 'parts', 'stock_moves', 'purchases', 'invoices', 'accounts', 'transactions', 'private_tx', 'private_balances', 'bonuses', 'reminders', 'counters'];
   G.FB = {
     backup: async () => {
       need(['admin']);
@@ -1251,10 +1349,11 @@ function init() {
     cache.settings = null; cache.emps = null; cache.st = null;
     await audit('login', 'users', me.id);
     reindexParts().catch((e) => console.warn('reindex', e));
+    await syncAllPrivacy().catch((e) => console.warn('private boxes', e));
     return { user: publicMe(), mustChange: false };
   });
   route('POST', '/api/auth/logout', ANY, async () => { await F.signOut(auth); me = null; return { ok: true }; });
-  route('GET', '/api/auth/me', ANY, () => ({ user: publicMe() }));
+  route('GET', '/api/auth/me', ANY, async () => { await syncAllPrivacy().catch((e) => console.warn('private boxes', e)); return { user: publicMe() }; });
   route('POST', '/api/auth/password', ANY, async ({ body }) => {
     if (String(body.password || '').length < 6) throw bad('password_too_short');
     try { await F.reauthenticateWithCredential(auth.currentUser, F.EmailAuthProvider.credential(auth.currentUser.email, body.current || '')); } catch (_) { throw bad('wrong_password'); }
@@ -1461,8 +1560,11 @@ function init() {
     const amount = r2(body.amount);
     if (!(amount > 0) || !body.from || !body.to || body.from === body.to) throw bad('invalid_transfer');
     const refId = 'T' + Date.now();
-    await addTx({ date: body.date, account_id: body.from, direction: 'out', amount, category: 'transfer', description: body.description || 'Transfer', ref_type: 'transfer', ref_id: refId });
-    await addTx({ date: body.date, account_id: body.to, direction: 'in', amount, category: 'transfer', description: body.description || 'Transfer', ref_type: 'transfer', ref_id: refId });
+    const [fa, ta] = [await mustRow('accounts', body.from), await mustRow('accounts', body.to)];
+    if (isPriv(fa) && !isAdmin()) throw new ApiError(403, 'private_account'); // anyone may put money into the private box, only the admin takes it out
+    const base = { date: body.date, amount, category: 'transfer', description: body.description || 'Transfer', ref_type: 'transfer', ref_id: refId };
+    await addTx({ ...base, account_id: body.from, direction: 'out', peer_private: !isPriv(fa) && isPriv(ta), peer_account_id: body.to }, { allowPrivate: true });
+    await addTx({ ...base, account_id: body.to, direction: 'in', peer_private: !isPriv(ta) && isPriv(fa), peer_account_id: body.from }, { allowPrivate: true });
     return { ok: true };
   });
   route('GET', '/api/cash/daily', MONEY, async ({ query }) => {
@@ -1485,9 +1587,12 @@ function init() {
   // ---- fix mistakes in the cash book: edit or delete any movement, with its effects reversed
   const signedOf = (direction, amount) => (direction === 'in' ? r2(amount) : -r2(amount));
   async function editTx(id, body) {
-    const t = await mustRow('transactions', id);
+    const t = await findTx(id);
+    const col = t._col || 'transactions';
     const accountId = body.account_id ? String(body.account_id) : t.account_id;
     const acc = await mustRow('accounts', accountId);
+    // movements do not move between the books and a private box
+    if (accountId !== t.account_id && (col === PRIV_TX || isPriv(acc))) throw bad('private_account');
     const amount = body.amount !== undefined && body.amount !== '' && body.amount !== null ? r2(body.amount) : t.amount;
     if (!(amount > 0) && !(t.category === 'salary' && amount === 0)) throw bad('invalid_amount');
     const dAmt = r2(amount - t.amount);
@@ -1501,15 +1606,21 @@ function init() {
         if (inv && r2(inv.paid + dSigned) < -0.009) throw bad('invalid_amount');
       }
       if (t.ref_type === 'advance') { adv = await getRow('bonuses', t.ref_id); if (adv && adv.paid) throw bad('advance_settled'); }
-      if (t.ref_type === 'transfer') legs = (await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))).filter((x) => x.id !== id);
+      if (t.ref_type === 'transfer') {
+        legs = (await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))).filter((x) => x.id !== id);
+        const pl = privLeg(t);
+        if (pl) legs.push({ ...pl, _col: PRIV_TX, signed: signedOf(pl.direction, t.amount) });
+        if (col === PRIV_TX) { const o = await getRow(PRIV_TX, privLegId(t.ref_id, flip(t.direction))); if (o) legs.push({ ...o, _col: PRIV_TX }); }
+      }
     }
     if (t.ref_type === 'invoice' && !inv) inv = await getRow('invoices', t.ref_id);
     if (t.ref_type === 'purchase') pur = await getRow('purchases', t.ref_id);
     const b = F.writeBatch(db);
     const desc = body.description !== undefined ? body.description || null : t.description || null;
-    b.update(ref('transactions', id), clean({ account_id: acc.id, account_name: acc.name, amount, signed: newSigned, method: body.method !== undefined ? body.method || null : t.method || null,
+    b.update(ref(col, id), clean({ account_id: acc.id, account_name: acc.name, amount, signed: newSigned, method: body.method !== undefined ? body.method || null : t.method || null,
       date: body.date || t.date, description: desc, kw: keywords(desc, t.category, acc.name, t.party_name) }));
-    if (acc.id === t.account_id) { if (dSigned) b.update(ref('accounts', acc.id), { balance: inc(dSigned) }); }
+    if (col === PRIV_TX) { if (dSigned) b.set(ref(PRIV_BAL, acc.id), { balance: inc(dSigned) }, { merge: true }); }
+    else if (acc.id === t.account_id) { if (dSigned) b.update(ref('accounts', acc.id), { balance: inc(dSigned) }); }
     else { b.update(ref('accounts', t.account_id), { balance: inc(-t.signed) }); b.update(ref('accounts', acc.id), { balance: inc(newSigned) }); }
     if (dAmt && t.party_type === 'supplier' && t.party_id) b.update(ref('suppliers', t.party_id), { balance: inc(t.direction === 'out' ? -dAmt : dAmt) });
     if (dAmt && inv) {
@@ -1520,19 +1631,29 @@ function init() {
     }
     if (dAmt && pur) { const paid = r2(pur.paid + dAmt); b.update(ref('purchases', pur.id), { paid, status: paid <= 0 ? 'unpaid' : paid + 0.009 >= pur.total ? 'paid' : 'partial' }); }
     if (dAmt && adv) b.update(ref('bonuses', adv.id), { amount });
-    for (const l of legs) { b.update(ref('transactions', l.id), { amount, signed: signedOf(l.direction, amount) }); b.update(ref('accounts', l.account_id), { balance: inc(r2(signedOf(l.direction, amount) - l.signed)) }); }
+    for (const l of legs) {
+      const dl = r2(signedOf(l.direction, amount) - l.signed);
+      b.update(ref(l._col || 'transactions', l.id), { amount, signed: signedOf(l.direction, amount) });
+      if (l._col === PRIV_TX) b.set(ref(PRIV_BAL, l.account_id), { balance: inc(dl) }, { merge: true });
+      else b.update(ref('accounts', l.account_id), { balance: inc(dl) });
+    }
     await b.commit();
     await audit('edit', 'transactions', id, { account: [t.account_id, acc.id], amount: [t.amount, amount], method: [t.method, body.method] });
-    return { ...(await getRow('transactions', id)), kw: undefined };
+    return { ...(await getRow(col, id)), kw: undefined };
   }
   async function deleteTx(id) {
-    const t = await mustRow('transactions', id);
+    const t = await findTx(id);
     if (t.ref_type === 'advance') {
       const bn = await getRow('bonuses', t.ref_id);
       if (bn && bn.paid) throw bad('advance_settled');
       if (bn) await F.deleteDoc(ref('bonuses', bn.id));
     }
-    if (t.ref_type === 'transfer') for (const o of await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))) if (o.id !== id) await removeTx(o);
+    if (t.ref_type === 'transfer') {
+      for (const o of await all('transactions', W('ref_type', '==', 'transfer'), W('ref_id', '==', t.ref_id))) if (o.id !== id) await removeTx(o);
+      const pl = privLeg(t);
+      if (pl) await removeTx({ ...pl, amount: t.amount, _col: PRIV_TX });
+      if (t._col === PRIV_TX) { const o = await getRow(PRIV_TX, privLegId(t.ref_id, flip(t.direction))); if (o) await removeTx({ ...o, _col: PRIV_TX }); }
+    }
     if (t.category === 'salary' && t.party_type === 'employee') {
       // the payroll is undone: what it settled is open again, a carried-over advance it created goes away
       const b = F.writeBatch(db);
@@ -1570,7 +1691,7 @@ function init() {
     if (!['in', 'out'].includes(body.direction)) throw bad('invalid_direction');
     if (!(num(body.amount) > 0)) throw bad('invalid_amount');
     if (!body.account_id || !body.category) throw bad('required');
-    const t = await addTx(body);
+    const t = await addTx(body, { allowPrivate: true });
     await audit('create', 'transactions', t.id);
     return t;
   });

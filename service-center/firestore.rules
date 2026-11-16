@@ -48,10 +48,27 @@ service cloud.firestore {
     match /suppliers/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
     match /purchases/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
     match /invoices/{id} { allow read, create, update: if hasRole(BILL()); allow delete: if hasRole(MGMT()); }
+    // a private box (in_reports == 0) is created / changed by the admin only; its balance lives in private_balances
+    function privAcc(d) { return d.get('in_reports', 1) == 0; }
     match /accounts/{id} {
       allow read: if hasRole(BILL());
-      allow create, delete: if hasRole(MGMT());
-      allow update: if hasRole(MGMT()) || (hasRole(BILL()) && onlyChanges(['balance']));
+      allow create: if hasRole(['admin']) || (hasRole(MGMT()) && !privAcc(request.resource.data));
+      allow delete: if hasRole(['admin']) || (hasRole(MGMT()) && !privAcc(resource.data));
+      allow update: if hasRole(['admin'])
+        || (hasRole(MGMT()) && !privAcc(resource.data) && !privAcc(request.resource.data) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['priv_ok']))
+        || (hasRole(BILL()) && !privAcc(resource.data) && onlyChanges(['balance']));
+    }
+    // movements and balance of private boxes: only the admin reads them; staff can only put a transfer in (and fix / undo it)
+    match /private_tx/{id} {
+      allow read: if hasRole(['admin']);
+      allow create: if hasRole(['admin']) || (hasRole(MONEY()) && request.resource.data.category == 'transfer' && request.resource.data.direction == 'in');
+      allow update: if hasRole(['admin']) || (hasRole(MONEY()) && resource.data.category == 'transfer' && request.resource.data.category == 'transfer'
+        && request.resource.data.direction == resource.data.direction && request.resource.data.account_id == resource.data.account_id);
+      allow delete: if hasRole(['admin']) || (hasRole(MONEY()) && resource.data.category == 'transfer');
+    }
+    match /private_balances/{id} {
+      allow read, delete: if hasRole(['admin']);
+      allow create, update: if hasRole(MONEY()) && request.resource.data.keys().hasOnly(['balance']);
     }
     match /transactions/{id} {
       allow read: if hasRole(MONEY()) || (hasRole(['advisor']) && resource.data.ref_type == 'invoice');

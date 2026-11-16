@@ -80,10 +80,13 @@
     if (!G.cache.service_types || force) G.cache.service_types = (await G.get('/api/service-types?limit=1000&active=1')).rows;
     return G.cache.service_types;
   };
-  G.loadAccounts = async (force) => {
+  // private boxes (outside the center's books) are left out of payment pickers; withPrivate adds them (cash page)
+  G.isPrivAcc = (a) => !!a && a.in_reports !== undefined && a.in_reports !== null && Number(a.in_reports) === 0;
+  G.loadAccounts = async (force, withPrivate) => {
     if (!G.cache.accounts || force) G.cache.accounts = (await G.get('/api/accounts?active=1')).rows;
-    return G.cache.accounts;
+    return withPrivate ? G.cache.accounts : G.cache.accounts.filter((a) => !G.isPrivAcc(a));
   };
+  G.accLabel = (a) => (a.balance === null || a.balance === undefined ? `${a.name} 🔒` : `${a.name} (${G.num(a.balance)})`);
 
   // ---------------- permissions ----------------
   G.can = (roles) => !!G.user && (roles === '*' || (G.user.roles || [G.user.role]).some((r) => roles.includes(r)));

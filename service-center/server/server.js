@@ -74,6 +74,11 @@ const rolesOf = (u) => (u ? [...new Set([u.role, ...parseRoles(u.extra_roles)])]
 const hasAny = (u, roles) => rolesOf(u).some((r) => roles.includes(r));
 const onlyIn = (u, roles) => rolesOf(u).every((r) => roles.includes(r)); // every role is restricted
 const publicUser = (u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, roles: rolesOf(u), employee_id: u.employee_id });
+// a private box (accounts.in_reports=0): only the admin sees its balance and movements; others may only transfer into it
+const isAdmin = (u) => hasAny(u, ['admin']);
+const isPrivateAcc = (id) => { const a = id ? get('SELECT in_reports FROM accounts WHERE id=?', id) : null; return !!a && Number(a.in_reports ?? 1) === 0; };
+const bookAccount = (id) => { if (isPrivateAcc(id)) throw bad('private_account'); };
+const privateGuard = (user, id) => { if (!isAdmin(user) && isPrivateAcc(id)) throw new HttpError(403, 'private_account'); };
 function need(user, roles) {
   if (!user) throw new HttpError(401, 'unauthorized');
   if (!hasAny(user, roles)) throw new HttpError(403, 'forbidden');
@@ -313,7 +318,17 @@ const RES = {
     filters: { active: 'a.active' },
     order: 'a.id',
     read: MONEY.concat(['advisor']), write: MGMT,
-    beforeDelete(id) {
+    beforeSave(data, user, existing) {
+      // only the admin creates a private box or moves a box in / out of the books
+      if (data.in_reports !== undefined && !isAdmin(user)) {
+        const was = existing ? Number(existing.in_reports ?? 1) : 1;
+        if (Number(data.in_reports ?? 1) !== was) throw new HttpError(403, 'private_account');
+      }
+      if (existing && !isAdmin(user) && Number(existing.in_reports ?? 1) === 0) throw new HttpError(403, 'private_account');
+    },
+    redact(user, rows) { if (!isAdmin(user)) for (const r of rows) if (Number(r.in_reports ?? 1) === 0) { r.balance = null; r.opening_balance = null; } },
+    beforeDelete(id, user) {
+      privateGuard(user, id);
       if (get('SELECT id FROM transactions WHERE account_id=? LIMIT 1', id)) throw bad('account_has_transactions');
     },
   },
@@ -333,7 +348,9 @@ const RES = {
     order: 't.date DESC, t.id DESC',
     read: MONEY, write: MONEY,
     noUpdate: true,
+    scope: (user) => (isAdmin(user) ? null : 'COALESCE(a.in_reports,1)=1'),
     beforeSave(data, user) {
+      privateGuard(user, data.account_id);
       if (!['in', 'out'].includes(data.direction)) throw bad('invalid_direction');
       if (!(num(data.amount) > 0)) throw bad('invalid_amount');
       data.amount = r2(data.amount);
@@ -419,6 +436,7 @@ function listResource(def, q, user) {
   for (const [k, expr] of Object.entries(def.special || {})) {
     if (q[k] === '1') where.push(expr);
   }
+  if (def.scope) { const s = def.scope(user); if (s) where.push(s); }
   if (def.dateCol) {
     if (q.from) { where.push(`substr(${def.dateCol},1,10) >= ?`); params.push(q.from); }
     if (q.to) { where.push(`substr(${def.dateCol},1,10) <= ?`); params.push(q.to); }
@@ -435,12 +453,15 @@ function listResource(def, q, user) {
   const whereSql = where.length ? ' WHERE ' + where.join(' AND ') : '';
   const total = get(`SELECT COUNT(*) AS n FROM (${def.select}${whereSql})`, ...params).n;
   const rows = all(`${def.select}${whereSql} ORDER BY ${def.order} LIMIT ? OFFSET ?`, ...params, limit, offset);
+  if (def.redact) def.redact(user, rows);
   return { rows: hideCols(def, user, rows), total };
 }
 
 function getResource(def, id, user) {
-  const row = get(`${def.select} WHERE ${def.alias}.id = ?`, id);
+  const sc = def.scope ? def.scope(user) : null;
+  const row = get(`${def.select} WHERE ${def.alias}.id = ?${sc ? ' AND ' + sc : ''}`, id);
   if (!row) throw new HttpError(404, 'not_found');
+  if (def.redact) def.redact(user, [row]);
   return hideCols(def, user, [row])[0];
 }
 
@@ -767,6 +788,7 @@ function addInvoicePayment(id, p, user) {
   const isRefund = p.refund === true || p.refund === 1;
   if (!isRefund && amount > r2(inv.total - inv.paid) + 0.009) throw bad('amount_exceeds_due', { due: r2(inv.total - inv.paid) });
   if (!p.account_id || !get('SELECT id FROM accounts WHERE id=?', p.account_id)) throw bad('required', { field: 'account_id' });
+  bookAccount(p.account_id);
   run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,ref_type,ref_id,party_type,party_id,method,user_id)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, p.date || today(), p.account_id, isRefund ? 'out' : 'in', amount, isRefund ? 'refund' : 'invoice_payment',
   `${isRefund ? 'Refund' : 'Payment'} ${inv.no}`, 'invoice', id, 'customer', inv.customer_id, p.method || 'cash', user.id);
@@ -966,6 +988,7 @@ function addPurchasePayment(id, pay, user) {
   const amount = r2(pay.amount);
   if (!(amount > 0)) throw bad('invalid_amount');
   if (!pay.account_id) throw bad('required', { field: 'account_id' });
+  bookAccount(pay.account_id);
   // purchase => we pay (out); purchase return => supplier refunds us (in)
   run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,ref_type,ref_id,party_type,party_id,method,user_id)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, pay.date || today(), pay.account_id, p.is_return ? 'in' : 'out', amount, p.is_return ? 'supplier_refund' : 'supplier_payment',
@@ -1058,6 +1081,7 @@ function giveAdvance(body, user) {
   const e = get('SELECT * FROM employees WHERE id=?', body.employee_id);
   if (!e) throw new HttpError(404, 'not_found');
   if (!get('SELECT id FROM accounts WHERE id=?', body.account_id)) throw bad('required', { field: 'account_id' });
+  bookAccount(body.account_id);
   const date = body.date || today();
   return tx(() => {
     const bid = Number(run("INSERT INTO bonuses(employee_id,date,period,type,amount,reason,paid) VALUES(?,?,?,'advance',?,?,0)", e.id, date, date.slice(0, 7), amount, body.reason || null).lastInsertRowid);
@@ -1072,6 +1096,7 @@ function giveAdvance(body, user) {
 function payPayroll(body, user) {
   const { employee_id, account_id, period } = body;
   if (!employee_id || !account_id || !period) throw bad('required');
+  bookAccount(account_id);
   validPeriod(period);
   const e = get('SELECT * FROM employees WHERE id=?', employee_id);
   if (!e) throw new HttpError(404, 'not_found');
@@ -1496,6 +1521,7 @@ route('POST', '/api/suppliers/:id/payments', MONEY, ({ params, body, user }) => 
   const s = get('SELECT * FROM suppliers WHERE id=?', params.id);
   if (!s) throw new HttpError(404, 'not_found');
   if (!(num(body.amount) > 0) || !body.account_id) throw bad('invalid_amount');
+  bookAccount(body.account_id);
   run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,method,user_id) VALUES(?,?,?,?,?,?,?,?,?,?)`,
     body.date || today(), body.account_id, 'out', r2(body.amount), 'supplier_payment', body.description || `Payment to ${s.name}`, 'supplier', s.id, body.method || 'cash', user.id);
   return { ok: true };
@@ -1524,8 +1550,11 @@ const r2s = (t) => (t.direction === 'in' ? t.amount : -t.amount);
 function editTransaction(id, body, user) {
   const t = get('SELECT * FROM transactions WHERE id=?', id);
   if (!t) throw new HttpError(404, 'not_found');
+  privateGuard(user, t.account_id);
   const accountId = body.account_id ? Number(body.account_id) : t.account_id;
   if (!get('SELECT id FROM accounts WHERE id=?', accountId)) throw bad('required', { field: 'account_id' });
+  // movements do not move between the books and a private box (use a transfer)
+  if (accountId !== t.account_id && (isPrivateAcc(accountId) || isPrivateAcc(t.account_id))) throw bad('private_account');
   const amount = body.amount !== undefined && body.amount !== '' && body.amount !== null ? r2(body.amount) : t.amount;
   if (!(amount > 0) && !(t.category === 'salary' && amount === 0)) throw bad('invalid_amount');
   return tx(() => {
@@ -1556,6 +1585,7 @@ function editTransaction(id, body, user) {
 function deleteTransaction(id, user) {
   const t = get('SELECT * FROM transactions WHERE id=?', id);
   if (!t) throw new HttpError(404, 'not_found');
+  privateGuard(user, t.account_id);
   tx(() => {
     if (t.ref_type === 'transfer') run("DELETE FROM transactions WHERE ref_type='transfer' AND ref_id=? AND id!=?", t.ref_id, id);
     if (t.ref_type === 'advance') {
@@ -1582,6 +1612,7 @@ route('DELETE', '/api/transactions/:id', MONEY, ({ params, user }) => deleteTran
 route('POST', '/api/transfer', MONEY, ({ body, user }) => {
   const amount = r2(body.amount);
   if (!(amount > 0) || !body.from || !body.to || body.from === body.to) throw bad('invalid_transfer');
+  privateGuard(user, body.from); // anyone may put money into the private box, only the admin takes it out
   tx(() => {
     const ref = Date.now();
     run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,ref_type,ref_id,user_id) VALUES(?,?,?,?,?,?,?,?,?)`, body.date || today(), body.from, 'out', amount, 'transfer', body.description || 'Transfer', 'transfer', ref, user.id);
