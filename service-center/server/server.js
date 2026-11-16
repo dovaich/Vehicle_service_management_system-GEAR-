@@ -1068,9 +1068,11 @@ function payroll(period) {
     // salary already paid for this period (older payments kept the period only in the description)
     const salaryPaid = get(`SELECT COALESCE(SUM(COALESCE(salary_part, amount)),0) AS s FROM transactions WHERE category='salary' AND party_type='employee' AND party_id=?
                             AND (period=? OR (period IS NULL AND description LIKE ?))`, e.id, period, `%${period}%`).s;
-    const net = r2(a.salary_due - r2(salaryPaid) + b.plus - b.minus - b.adv);
+    // a final settlement closes the period's salary: only bonuses / deductions / advances recorded after it remain
+    const settled = !!get("SELECT 1 AS x FROM transactions WHERE category='salary' AND party_type='employee' AND party_id=? AND period=? AND settled=1", e.id, period);
+    const net = r2((settled ? 0 : a.salary_due - r2(salaryPaid)) + b.plus - b.minus - b.adv);
     delete a.days;
-    return { employee_id: e.id, name: e.name, job: e.job, salary: e.salary, pay_cycle: cycle, ...a, period_label: PAY.periodLabel(period), salary_paid: r2(salaryPaid), bonuses: r2(b.plus), deductions: r2(b.minus), advances: r2(b.adv), net };
+    return { employee_id: e.id, name: e.name, job: e.job, salary: e.salary, pay_cycle: cycle, ...a, period_label: PAY.periodLabel(period), settled, salary_paid: r2(salaryPaid), bonuses: r2(b.plus), deductions: r2(b.minus), advances: r2(b.adv), net };
   });
 }
 // give an employee an advance: cash leaves the account now, and the next payroll deducts it
@@ -1107,12 +1109,13 @@ function payPayroll(body, user) {
     const salaryDue = Math.max(0, r2(row.salary_due - row.salary_paid));
     const adj = r2(row.bonuses - row.deductions - row.advances);
     const custom = body.amount !== undefined && body.amount !== null && body.amount !== '';
-    if (!salaryDue && !adj && !custom) return { ok: true, nothing: true };
+    const settle = body.settle === true || body.settle === 1 || body.settle === '1';
+    if (!salaryDue && !adj && !custom && !settle) return { ok: true, nothing: true };
     let sp;
-    try { sp = PAY.paySplit(salaryDue, adj, custom ? body.amount : undefined); } catch (err) { throw bad('invalid_amount'); }
+    try { sp = PAY.paySplit(row.settled ? 0 : salaryDue, adj, custom ? body.amount : undefined, settle); } catch (err) { throw bad('invalid_amount'); }
     const desc = `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${row.bonuses} - ${row.deductions} - ${row.advances})${custom ? ' / paid ' + sp.pay : ''}`;
-    const tid = Number(run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id,period,salary_part)
-      VALUES(?,?,'out',?,'salary',?,'employee',?,?,?,?)`, today(), account_id, sp.pay, desc, e.id, user.id, period, sp.salary_part).lastInsertRowid);
+    const tid = Number(run(`INSERT INTO transactions(date,account_id,direction,amount,category,description,party_type,party_id,user_id,period,salary_part,settled)
+      VALUES(?,?,'out',?,'salary',?,'employee',?,?,?,?,?)`, today(), account_id, sp.pay, desc, e.id, user.id, period, sp.salary_part, settle ? 1 : null).lastInsertRowid);
     run("UPDATE bonuses SET paid=1, settled_tx=?, transaction_id=COALESCE(CASE WHEN type='advance' THEN transaction_id END, ?) WHERE employee_id=? AND paid=0", tid, tid, e.id);
     // advances/deductions larger than the pay: the rest stays as an advance for the next payroll
     if (sp.carry_advance) run("INSERT INTO bonuses(employee_id,date,period,type,amount,reason,paid,carried_from_tx) VALUES(?,?,?,'advance',?,?,0,?)", e.id, today(), period, sp.carry_advance, `Carried over from ${PAY.periodLabel(period)}`, tid);

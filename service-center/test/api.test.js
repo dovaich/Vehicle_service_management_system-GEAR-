@@ -570,6 +570,22 @@ test('full service-center flow', async () => {
   crow = (await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === pc.id);
   assert.equal(crow.salary_paid, 3300); assert.equal(crow.net, -300, 'paid 300 over the salary');
   await call('POST', '/api/payroll/pay', { employee_id: pc.id, account_id: A1, period: '2027-01', amount: -5 }, { expect: 400 });
+  // final settlement zeroes the period: the old overpayment (-300) is closed with 0
+  await call('POST', '/api/payroll/pay', { employee_id: pc.id, account_id: A1, period: '2027-01', amount: 0, settle: 1 });
+  crow = (await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === pc.id);
+  assert.equal(crow.net, 0); assert.equal(crow.settled, true);
+  // settle for less than due, with an advance: nothing owed, nothing carried, next period starts clean
+  const ps = await call('POST', '/api/employees', { name: 'Settle Guy', job: 'technician', salary: 3000 });
+  await call('POST', '/api/advances', { employee_id: ps.id, amount: 400, account_id: A1 });
+  a1c = await balOf(A1);
+  await call('POST', '/api/payroll/pay', { employee_id: ps.id, account_id: A1, period: '2027-01', amount: 1500, settle: 1 });
+  assert.equal(await balOf(A1), Math.round((a1c - 1500) * 100) / 100);
+  crow = (await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === ps.id);
+  assert.equal(crow.net, 0); assert.equal(crow.advances, 0);
+  assert.equal((await call('GET', `/api/bonuses?employee_id=${ps.id}&paid=0`)).total, 0, 'no carry');
+  await call('POST', '/api/bonuses', { employee_id: ps.id, type: 'bonus', amount: 100 });
+  assert.equal((await call('GET', '/api/payroll?period=2027-01')).find((x) => x.employee_id === ps.id).net, 100, 'only new items after the settlement');
+  assert.equal((await call('GET', '/api/payroll?period=2027-02')).find((x) => x.employee_id === ps.id).net, 3100, 'next period counts afresh');
   // less than the bonuses -> the unpaid bonus is carried
   const pb = await call('POST', '/api/employees', { name: 'Bonus Carry', job: 'technician', salary: 0, active: 1 });
   await call('POST', '/api/bonuses', { employee_id: pb.id, type: 'bonus', amount: 500 });

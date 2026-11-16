@@ -573,7 +573,7 @@
           const period = periodNow();
           body.querySelector('[data-plabel]').textContent = `${t('period')}: ${GEAR_PAY.periodLabel(period)}`;
           const rows = await G.get('/api/payroll?period=' + period);
-          const owed = (r) => Math.max(0, r.salary_due - r.salary_paid) > 0.009 || r.bonuses || r.deductions || r.advances;
+          const owed = (r) => (!r.settled && Math.max(0, r.salary_due - r.salary_paid) > 0.009) || r.bonuses || r.deductions || r.advances;
           body.querySelector('[data-out]').innerHTML = G.table([
             { key: 'name', label: t('employee'), render: (r) => `<b>${esc(r.name)}</b><br><small class="muted">${t('j_' + r.job)} · ${t('pay_' + (r.pay_type || 'monthly'))}</small>` },
             { key: 'salary', cls: 'num', render: (r) => G.money(r.salary) },
@@ -582,7 +582,7 @@
             { key: 'salary_paid', cls: 'num', render: (r) => G.money(r.salary_paid) }, { key: 'bonuses', label: t('bonus'), cls: 'num', render: (r) => `<span class="pos">${G.money(r.bonuses)}</span>` },
             { key: 'deductions', cls: 'num', render: (r) => `<span class="neg">${G.money(r.deductions)}</span>` },
             { key: 'advances', cls: 'num', render: (r) => (r.advances ? `<span class="neg">${G.money(r.advances)}</span>` : '-') },
-            { key: 'net', cls: 'num', render: (r) => `<b class="${r.net < 0 ? 'neg' : ''}">${G.money(r.net)}</b>` },
+            { key: 'net', cls: 'num', render: (r) => `<b class="${r.net < 0 ? 'neg' : ''}">${G.money(r.net)}</b>${r.settled ? `<br><span class="badge b-done">${t('settled_lbl')}</span>` : ''}` },
             { key: 'a', label: '', cls: 'actions-wide', render: (r) => `${owed(r) ? `<button class="btn btn-sm btn-primary" data-pay>💵 ${r.net > 0 ? t('pay') : t('settle')}</button>` : `<span class="badge b-done">✔</span> <button class="btn btn-sm" data-pay title="${t('pay_custom_help')}">💵 ${t('pay')}</button>`}
               <button class="btn btn-sm" data-adv>${t('advance')}</button>` },
           ], rows, { foot: `<tr><td colspan="8" data-label=""></td><td class="num" data-label="${t('net')}"><b>${G.money(rows.reduce((s, r) => s + Math.max(0, r.net), 0))}</b></td><td></td></tr>` });
@@ -599,14 +599,17 @@
                 <div class="trow"><span>${t('deductions')}</span><b class="neg">- ${G.money(r.deductions)}</b></div>
                 <div class="trow"><span>${t('advances')}</span><b class="neg">- ${G.money(r.advances)}</b></div>
                 <div class="trow big"><span>${t('cash_to_pay')}</span><b>${G.money(Math.max(0, r.net))}</b></div>
-                ${r.net < 0 ? `<p class="alert">${t('advance_carry')}: ${G.money(-r.net)}</p>` : ''}</div>`,
+                ${r.net < 0 && r.advances > 0 ? `<p class="alert" data-carry>${t('advance_carry')}: ${G.money(-r.net)}</p>` : ''}</div>`,
               fields: [{ name: 'account_id', label: t('account'), type: 'select', options: accounts.map((a) => [a.id, `${a.name} (${G.num(a.balance)})`]), noEmpty: true },
-                { name: 'amount', label: t('pay_amount'), type: 'number', attrs: 'min="0" step="0.01"', help: t('pay_custom_help') }],
-              values: { amount: Math.max(0, r.net) },
+                { name: 'amount', label: t('pay_amount'), type: 'number', attrs: 'min="0" step="0.01"', help: t('pay_custom_help') },
+                { name: 'settle', label: t('pay_settle'), type: 'checkbox', default: 1, span: 2, help: t('pay_settle_help') }],
+              values: { amount: Math.max(0, r.net), settle: 1 },
               onSubmit: async (d, close) => {
                 const body = { employee_id: r.employee_id, account_id: d.account_id, period };
+                if (Number(d.settle)) body.settle = 1;
                 // send the amount only when it was changed, so the default stays the exact computed net
                 if (d.amount !== '' && d.amount !== null && d.amount !== undefined && Math.abs(Number(d.amount) - Math.max(0, r.net)) > 0.009) body.amount = Number(d.amount);
+                else if (body.settle) body.amount = Math.max(0, Number(d.amount) || 0);
                 else if (!owed(r)) return G.toast(t('pay_amount'));
                 await G.post('/api/payroll/pay', body); close(); G.toast(t('saved')); load();
               },
@@ -614,11 +617,14 @@
             const amt = document.querySelector('.modal [name=amount], dialog [name=amount]');
             if (amt) {
               const note = document.createElement('b'); note.className = 'pay-note'; note.style.display = 'block'; amt.after(note);
+              const st = document.querySelector('.modal [name=settle]');
               const upd = () => {
                 const v = Number(amt.value || 0); const due = Math.max(0, r.net); const diff = Math.round((v - due) * 100) / 100;
+                const carry = document.querySelector('.modal [data-carry]'); if (carry) carry.hidden = !!(st && st.checked);
+                if (st && st.checked) { note.textContent = `✔ ${t('pay_settle_note')}`; return; }
                 note.textContent = amt.value === '' || Math.abs(diff) < 0.01 ? '' : diff < 0 ? `${t('pay_rest_due')}: ${G.money(-diff)}` : `${t('pay_extra')}: ${G.money(diff)}`;
               };
-              amt.oninput = upd; upd();
+              amt.oninput = upd; if (st) st.onchange = upd; upd();
             }
           });
         };

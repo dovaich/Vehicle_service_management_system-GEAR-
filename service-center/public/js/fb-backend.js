@@ -581,7 +581,7 @@ function init() {
     const d = clean({
       date: t.date || today(), account_id: String(t.account_id), account_name: acc.name, direction: t.direction, amount: r2(t.amount), signed: t.direction === 'in' ? r2(t.amount) : -r2(t.amount),
       category: t.category, description: t.description || null, ref_type: t.ref_type || null, ref_id: t.ref_id ? String(t.ref_id) : null, party_type: t.party_type || null,
-      party_id: t.party_id ? String(t.party_id) : null, party_name: partyName, method: t.method || null, period: t.period || null, salary_part: t.salary_part ?? null, user_id: me.id, user_name: me.name, created_at: nowStr(),
+      party_id: t.party_id ? String(t.party_id) : null, party_name: partyName, method: t.method || null, period: t.period || null, salary_part: t.salary_part ?? null, settled: t.settled ? 1 : undefined, user_id: me.id, user_name: me.name, created_at: nowStr(),
       is_expense: t.direction === 'out' && !['transfer', 'supplier_payment', 'refund'].includes(t.category),
       peer_private: t.peer_private ? 1 : undefined, peer_account_id: t.peer_private ? String(t.peer_account_id) : undefined,
     });
@@ -1103,7 +1103,8 @@ function init() {
       const paidSal = r2(sal.filter((t) => t.party_id === e.id).reduce((s, t) => s + num(t.salary_part ?? t.amount), 0));
       const a = PAY.calc(e, att.filter((r) => r.employee_id === e.id), period, cache.settings || {}, today());
       delete a.days;
-      return { employee_id: e.id, name: e.name, job: e.job, salary: num(e.salary), pay_cycle: cycle, ...a, period_label: PAY.periodLabel(period), salary_paid: paidSal, bonuses: plus, deductions: minus, advances: adv, net: r2(a.salary_due - paidSal + plus - minus - adv) };
+      const settled = sal.some((t) => t.party_id === e.id && Number(t.settled) === 1);
+      return { employee_id: e.id, name: e.name, job: e.job, salary: num(e.salary), pay_cycle: cycle, ...a, period_label: PAY.periodLabel(period), settled, salary_paid: paidSal, bonuses: plus, deductions: minus, advances: adv, net: r2((settled ? 0 : a.salary_due - paidSal) + plus - minus - adv) };
     });
   }
   // give an employee an advance: cash leaves the account now, the next payroll deducts it
@@ -1131,10 +1132,11 @@ function init() {
     const salaryDue = Math.max(0, r2(rowp.salary_due - rowp.salary_paid));
     const adj = r2(rowp.bonuses - rowp.deductions - rowp.advances);
     const custom = body.amount !== undefined && body.amount !== null && body.amount !== '';
-    if (!salaryDue && !adj && !custom) return { ok: true, nothing: true };
+    const settle = body.settle === true || body.settle === 1 || body.settle === '1';
+    if (!salaryDue && !adj && !custom && !settle) return { ok: true, nothing: true };
     let sp;
-    try { sp = PAY.paySplit(salaryDue, adj, custom ? body.amount : undefined); } catch (err) { throw bad('invalid_amount'); }
-    const t = await addTx({ account_id, direction: 'out', amount: sp.pay, category: 'salary', description: `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${rowp.bonuses} - ${rowp.deductions} - ${rowp.advances})${custom ? ' / paid ' + sp.pay : ''}`, party_type: 'employee', party_id: e.id, period, salary_part: sp.salary_part });
+    try { sp = PAY.paySplit(rowp.settled ? 0 : salaryDue, adj, custom ? body.amount : undefined, settle); } catch (err) { throw bad('invalid_amount'); }
+    const t = await addTx({ account_id, direction: 'out', amount: sp.pay, category: 'salary', description: `Salary ${PAY.periodLabel(period)} - ${e.name} (${salaryDue} + ${rowp.bonuses} - ${rowp.deductions} - ${rowp.advances})${custom ? ' / paid ' + sp.pay : ''}`, party_type: 'employee', party_id: e.id, period, salary_part: sp.salary_part, settled: settle ? 1 : undefined });
     const b = F.writeBatch(db);
     for (const x of await all('bonuses', W('employee_id', '==', e.id), W('paid', '==', 0))) b.update(ref('bonuses', x.id), { paid: 1, settled_tx: t.id, transaction_id: x.type === 'advance' && x.transaction_id ? x.transaction_id : t.id });
     for (const [type, amt] of [['advance', sp.carry_advance], ['bonus', sp.carry_bonus]]) {

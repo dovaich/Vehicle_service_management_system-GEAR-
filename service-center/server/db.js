@@ -403,6 +403,7 @@ for (const c of ['attendance_based', 'work_start', 'work_end', 'weekend_days']) 
 // payroll payments: the pay period and the part of the payment that was salary (the rest is bonus/deductions/advances)
 if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='period'").get()) db.exec('ALTER TABLE transactions ADD COLUMN period TEXT');
 if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='salary_part'").get()) db.exec('ALTER TABLE transactions ADD COLUMN salary_part REAL');
+if (!db.prepare("SELECT 1 FROM pragma_table_info('transactions') WHERE name='settled'").get()) db.exec('ALTER TABLE transactions ADD COLUMN settled INTEGER');
 db.exec(`CREATE TABLE IF NOT EXISTS attendance (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
