@@ -51,19 +51,42 @@
     },
   }));
 
+  // review counter sales recorded without an invoice (older Firebase versions): link / return to stock
+  const orphansDialog = async (done) => {
+    const r = await G.get('/api/stock/orphans');
+    const rows = r.orphans;
+    G.modal({
+      title: '🔎 ' + t('orph_title'), wide: true,
+      body: `<p>${t('orph_linked')}: <b>${r.linked.length}</b> · ${t('orph_comp')}: <b>${r.compensated.length}</b> · ${t('orph_none')}: <b class="${rows.length ? 'neg' : ''}">${rows.length}</b></p>
+        ${rows.length ? `<p class="alert">${t('orph_help')}</p>${G.table([
+          { key: 'c', label: '', render: (x) => `<input type="checkbox" data-oc value="${esc(x.id)}" checked>` },
+          { key: 'date', render: (x) => G.fdt(x.date) }, { key: 'part_no' }, { key: 'name', label: t('part'), render: (x) => esc(G.tl(x.name_ar, x.name_en)) },
+          { key: 'qty', cls: 'num', render: (x) => `<b>${G.num(x.qty)}</b>` }, { key: 'user_name', label: t('user') }], rows)}` : `<p>✔ ${t('orph_ok')}</p>`}`,
+      footer: `<button class="btn" data-close type="button">${t('cancel')}</button><button class="btn btn-primary" data-go type="button">${rows.length ? t('orph_go') : t('orph_link')}</button>`,
+      onMount: (m, close) => {
+        m.querySelector('[data-go]').onclick = async () => {
+          const ids = [...m.querySelectorAll('[data-oc]:checked')].map((c) => c.value);
+          try { const x = await G.post('/api/stock/orphans', { return_ids: ids }); G.toast(`${t('saved')} (${x.linked + x.compensated} ↔, ${x.returned} ↩)`); close(); done && done(); } catch (e) { G.fail(e); }
+        };
+      },
+    });
+  };
   G.addRoute('/stock-moves', (view, p, q) => G.listPage(view, {
     title: t('stock_moves'), res: 'stock-moves', canWrite: false, csvName: 'stock_moves',
+    extraButtons: window.FIREBASE_CONFIG && G.can(R.MGMT) ? `<button class="btn" data-orph onclick="G.openOrphans()">🔎 ${t('orph_btn')}</button>` : '',
     defaultQuery: { part_id: q.part_id || '' },
     filters: [{ name: 'type', type: 'select', options: G.opt(['in', 'out', 'return', 'adjust'], 'mv_') }, { name: 'from', type: 'date' }, { name: 'to', type: 'date' }],
     columns: [
       { key: 'date', render: (r) => G.fdt(r.date) }, { key: 'part_no' }, { key: 'name', label: t('part'), render: (r) => esc(G.tl(r.name_ar, r.name_en)) },
       { key: 'type', render: (r) => G.badge(r.type, 'mv_') }, { key: 'qty', cls: 'num', render: (r) => `<b class="${r.qty < 0 ? 'neg' : 'pos'}">${G.num(r.qty)}</b>` },
       { key: 'unit_cost', cls: 'num', hideMobile: true, render: (r) => G.num(r.unit_cost) },
-      { key: 'ref', label: t('reference'), render: (r) => (r.ref_type === 'work_order' ? `<a href="#/work-orders/${r.ref_id}">WO #${r.ref_id}</a>` : r.ref_type === 'purchase' || r.ref_type === 'purchase_return' ? `<a href="#/purchases/${r.ref_id}">${esc(r.ref_type)} #${r.ref_id}</a>` : r.ref_type === 'invoice' ? `<a href="#/invoices/${r.ref_id}">INV #${r.ref_id}</a>` : esc(r.ref_type || '')) },
+      { key: 'ref', label: t('reference'), render: (r) => (r.ref_type === 'work_order' ? `<a href="#/work-orders/${r.ref_id}">WO #${r.ref_id}</a>` : r.ref_type === 'purchase' || r.ref_type === 'purchase_return' ? `<a href="#/purchases/${r.ref_id}">${esc(r.ref_type)} #${r.ref_id}</a>` : r.ref_type === 'invoice' ? (r.ref_id ? `<a href="#/invoices/${r.ref_id}">INV #${r.ref_id}</a>` : `<span class="badge b-new">${r.fixed ? t('orph_fixed') : t('orph_noinv')}</span>`) : esc(r.ref_type || '')) },
       { key: 'notes', hideMobile: true }, { key: 'user_name', label: t('user'), hideMobile: true },
     ],
     csvColumns: [{ key: 'date' }, { key: 'part_no' }, { key: 'name_en' }, { key: 'type', csv: (r) => mvLabel(r.type) }, { key: 'qty' }, { key: 'unit_cost' }, { key: 'ref_type' }, { key: 'ref_id' }, { key: 'notes' }],
   }), R.SUPP);
+
+  G.openOrphans = () => orphansDialog(() => G.route());
 
   // ---------------- suppliers ----------------
   const supplierFields = [{ name: 'name', required: true, span: 2 }, { name: 'contact' }, { name: 'phone', type: 'tel' }, { name: 'email', type: 'email' }, { name: 'tax_no' }, { name: 'address', span: 2 }, { name: 'opening_balance', type: 'number', help: G.tl('موجب = مستحق للمورد', 'positive = we owe the supplier') }, { name: 'notes', type: 'textarea', span: 2 }];

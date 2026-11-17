@@ -568,6 +568,39 @@ function init() {
     });
   }
 
+  // several stock moves computed in memory and written in the same batch as the document they belong to,
+  // so an interrupted save never moves stock without its invoice / purchase (same rules as stockMove)
+  async function stockPlan() {
+    const allowNeg = String(await getSetting('allow_negative_stock', '0')) === '1';
+    const parts = new Map(); const moves = [];
+    return {
+      async move(partId, type, qty, unitCost, refType, notes) {
+        qty = Number(qty) || 0;
+        if (!qty || !partId) return;
+        const pid = String(partId);
+        let st = parts.get(pid);
+        if (!st) { const p = await mustRow('parts', pid); st = { p, qty: num(p.qty), cost: num(p.cost), extra: {} }; parts.set(pid, st); }
+        let delta = qty;
+        if (type === 'out') delta = -Math.abs(qty); else if (type === 'in' || type === 'return') delta = Math.abs(qty);
+        const newQty = r2(st.qty + delta);
+        if (newQty < 0 && delta < 0 && !allowNeg) throw bad('insufficient_stock', { part: st.p.name_en, available: st.qty });
+        if (type === 'in' && refType !== 'return' && unitCost > 0) st.cost = st.qty > 0 ? r2((st.qty * st.cost + delta * unitCost) / (st.qty + delta)) : r2(unitCost);
+        st.qty = newQty;
+        moves.push({ pid, type, delta, unit_cost: r2(unitCost || st.cost), refType, notes });
+      },
+      set(partId, fields) { const st = parts.get(String(partId)); if (st) Object.assign(st.extra, fields); },
+      part: (partId) => (parts.get(String(partId)) || {}).p,
+      apply(b, refId) {
+        for (const [pid, st] of parts) b.update(ref('parts', pid), { qty: st.qty, cost: st.cost, low: st.qty <= num(st.p.min_qty), ...st.extra });
+        for (const m of moves) {
+          const p = parts.get(m.pid).p;
+          b.set(newRef('stock_moves'), clean({ part_id: m.pid, part_no: p.part_no || null, name_en: p.name_en || null, name_ar: p.name_ar || null, date: nowStr(), type: m.type, qty: m.delta,
+            unit_cost: m.unit_cost, ref_type: m.refType || null, ref_id: refId ? String(refId) : null, notes: m.notes || null, user_id: me.id, user_name: me.name, kw: keywords(p.part_no, p.name_en, p.name_ar, m.notes, m.refType) }));
+        }
+      },
+    };
+  }
+
   // ------------------------------------------------------------------ transactions (cash)
   async function addTx(t, opts = {}) {
     const acc = await mustRow('accounts', t.account_id);
@@ -698,7 +731,7 @@ function init() {
     if (!hasAny(MONEY)) { delete inv.parts_cost; inv.items.forEach((i) => delete i.unit_cost); }
     return inv;
   }
-  async function createInvoice({ customer_id, vehicle_id, work_order_id, work_order_no, date, discount, tax_rate, notes, items }) {
+  async function createInvoice({ customer_id, vehicle_id, work_order_id, work_order_no, date, discount, tax_rate, notes, items, plan }) {
     const c = await mustRow('customers', customer_id);
     const v = vehicle_id ? await getRow('vehicles', vehicle_id) : null;
     const tr = tax_rate !== undefined && tax_rate !== '' && tax_rate !== null ? num(tax_rate) : num(await getSetting('vat_rate', '0'));
@@ -715,6 +748,7 @@ function init() {
     b.set(r, d);
     b.update(ref('customers', c.id), { balance: inc(tt.total) });
     if (work_order_id) b.update(ref('work_orders', work_order_id), { invoice_id: r.id, invoice_no: no, invoice_status: d.status });
+    if (plan) plan.apply(b, r.id); // counter-sale parts leave stock together with the invoice
     await b.commit();
     return r.id;
   }
@@ -786,14 +820,11 @@ function init() {
       } else items.push({ kind: it.kind || 'other', description: it.description, qty, unit_price: r2(it.unit_price), unit_cost: 0, amount: r2(qty * num(it.unit_price)), part_id: null, technician_id: it.technician_id || null });
     }
     // stock first (it can refuse), then the customer / vehicle, so a refusal never leaves a stray customer
-    for (const it of items) if (it.part_id) {
-      const p = await mustRow('parts', it.part_id);
-      if (num(p.qty) < it.qty && String(await getSetting('allow_negative_stock', '0')) !== '1') throw bad('insufficient_stock', { part: p.name_en, available: p.qty });
-    }
+    const plan = await stockPlan();
+    for (const it of items) if (it.part_id) await plan.move(it.part_id, 'out', it.qty, it.unit_cost, 'invoice', 'Counter sale');
     const customerId = await resolveCustomer(body);
     const vehicleId = await resolveVehicle(body, customerId);
-    for (const it of items) if (it.part_id) await stockMove(it.part_id, 'out', it.qty, it.unit_cost, 'invoice', null, 'Counter sale');
-    const id = await createInvoice({ customer_id: customerId, vehicle_id: vehicleId, date: body.date, discount: body.discount, tax_rate: body.tax_rate, notes: body.notes, items });
+    const id = await createInvoice({ customer_id: customerId, vehicle_id: vehicleId, date: body.date, discount: body.discount, tax_rate: body.tax_rate, notes: body.notes, items, plan });
     if (vehicleId && services.length) await generateReminders({ id: null, vehicle_id: vehicleId, mileage: num((body.vehicle || {}).mileage ?? body.mileage), labor: [...new Set(services)].map((sid) => ({ service_type_id: sid })) });
     if (body.payment && num(body.payment.amount) > 0) await addInvoicePayment(id, body.payment);
     await audit('create', 'invoices', id, { manual: true });
@@ -820,10 +851,14 @@ function init() {
     const inv = await mustRow('invoices', id);
     if (inv.status === 'cancelled') return;
     if (r2(inv.paid) > 0) throw bad('invoice_has_payments');
-    if (inv.work_order_id) await F.updateDoc(ref('work_orders', inv.work_order_id), { invoice_id: null, invoice_no: null, invoice_status: null });
-    else for (const it of inv.items || []) if (it.part_id) await stockMove(it.part_id, 'return', it.qty, it.unit_cost, 'invoice', id, 'Invoice cancelled');
-    await F.updateDoc(ref('invoices', id), { status: 'cancelled', open: false, total_eff: 0, notes: `${inv.notes || ''} [cancelled ${nowStr()}]` });
-    await F.updateDoc(ref('customers', inv.customer_id), { balance: inc(-r2(inv.total - inv.paid)) });
+    const plan = await stockPlan();
+    if (!inv.work_order_id) for (const it of inv.items || []) if (it.part_id && await getRow('parts', it.part_id)) await plan.move(it.part_id, 'return', it.qty, it.unit_cost, 'invoice', 'Invoice cancelled');
+    const b = F.writeBatch(db);
+    if (inv.work_order_id) b.update(ref('work_orders', inv.work_order_id), { invoice_id: null, invoice_no: null, invoice_status: null });
+    plan.apply(b, id);
+    b.update(ref('invoices', id), { status: 'cancelled', open: false, total_eff: 0, notes: `${inv.notes || ''} [cancelled ${nowStr()}]` });
+    b.update(ref('customers', inv.customer_id), { balance: inc(-r2(inv.total - inv.paid)) });
+    await b.commit();
     await audit('cancel', 'invoices', id);
   }
 
@@ -857,19 +892,14 @@ function init() {
     // stock check before changing anything
     const qtyBy = (rows, pid) => rows.filter((r) => String(r.part_id) === String(pid)).reduce((sm, r) => sm + num(r.qty, 1), 0);
     const pids = [...new Set([...old, ...items].filter((r) => r.part_id).map((r) => String(r.part_id)))];
-    const allowNeg = String(await getSetting('allow_negative_stock', '0')) === '1';
+    const plan = await stockPlan();
     for (const pid of pids) {
       const d = r2(qtyBy(items, pid) - qtyBy(old, pid));
-      const part = await getRow('parts', pid);
-      if (d > 0 && part && num(part.qty) < d && !allowNeg) throw bad('insufficient_stock', { part: part.name_en, available: part.qty });
+      if (!d || !(await getRow('parts', pid))) continue;
+      await plan.move(pid, d > 0 ? 'out' : 'return', Math.abs(d), null, 'invoice', `Edited ${inv.no}`);
     }
     const customerId = body.customer_id || (body.customer && (body.customer.name || body.customer.phone)) ? await resolveCustomer(body) : inv.customer_id;
     const vehicleId = body.vehicle_id || (body.vehicle && (body.vehicle.plate || body.vehicle.model)) ? await resolveVehicle(body, customerId) : (customerId === inv.customer_id ? inv.vehicle_id : null);
-    for (const pid of pids) {
-      const d = r2(qtyBy(items, pid) - qtyBy(old, pid));
-      if (d > 0) await stockMove(pid, 'out', d, null, 'invoice', id, `Edited ${inv.no}`);
-      if (d < 0) await stockMove(pid, 'return', -d, null, 'invoice', id, `Edited ${inv.no}`);
-    }
     const c = await mustRow('customers', customerId);
     const v = vehicleId ? await getRow('vehicles', vehicleId) : null;
     const status = invStatus(tt.total, num(inv.paid));
@@ -887,6 +917,7 @@ function init() {
       for (const t of await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))) b.update(ref('transactions', t.id), { party_id: c.id, party_name: c.name });
     }
     if (inv.work_order_id) b.update(ref('work_orders', inv.work_order_id), { invoice_status: status });
+    plan.apply(b, id);
     await b.commit();
     await audit('edit', 'invoices', id, { old_total: inv.total, total: tt.total });
     return invoiceFull(id);
@@ -894,15 +925,19 @@ function init() {
   async function deleteInvoice(id) {
     const inv = await mustRow('invoices', id);
     for (const t of await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))) await removeTx(t);
+    const plan = await stockPlan();
+    const b = F.writeBatch(db);
     if (inv.status !== 'cancelled') {
-      if (!inv.work_order_id) for (const it of inv.items || []) if (it.part_id) await stockMove(it.part_id, 'return', it.qty, it.unit_cost, 'invoice', id, 'Invoice deleted');
-      await F.updateDoc(ref('customers', inv.customer_id), { balance: inc(-r2(inv.total - inv.paid)) }).catch(() => {});
+      if (!inv.work_order_id) for (const it of inv.items || []) if (it.part_id && await getRow('parts', it.part_id)) await plan.move(it.part_id, 'return', it.qty, it.unit_cost, 'invoice', 'Invoice deleted');
+      if (await getRow('customers', inv.customer_id)) b.update(ref('customers', inv.customer_id), { balance: inc(-r2(inv.total - inv.paid)) });
     }
     if (inv.work_order_id) {
       const w = await getRow('work_orders', inv.work_order_id);
-      if (w && w.invoice_id === id) await F.updateDoc(ref('work_orders', w.id), { invoice_id: null, invoice_no: null, invoice_status: null });
+      if (w && w.invoice_id === id) b.update(ref('work_orders', w.id), { invoice_id: null, invoice_no: null, invoice_status: null });
     }
-    await F.deleteDoc(ref('invoices', id));
+    plan.apply(b, id);
+    b.delete(ref('invoices', id));
+    await b.commit();
     await audit('delete', 'invoices', id, { no: inv.no, total: inv.total, paid: inv.paid });
   }
 
@@ -939,18 +974,18 @@ function init() {
     const r = newRef('purchases');
     const d = clean({ no, supplier_id: s.id, supplier_name: s.name, date: body.date || today(), supplier_invoice_no: body.supplier_invoice_no || null, items, subtotal, discount: r2(body.discount), tax: r2(body.tax), total, paid: 0, is_return: isReturn, status: 'unpaid', notes: body.notes || null, created_at: nowStr() });
     d.kw = keywords(no, d.supplier_invoice_no, s.name);
+    // stock, prices and the purchase itself are written together: an interrupted save changes nothing
+    const plan = await stockPlan();
     for (const it of items) {
-      if (isReturn) await stockMove(it.part_id, 'out', it.qty, it.unit_cost, 'purchase_return', r.id, 'Return to supplier');
+      if (isReturn) await plan.move(it.part_id, 'out', it.qty, it.unit_cost, 'purchase_return', 'Return to supplier');
       else {
-        await stockMove(it.part_id, 'in', it.qty, it.unit_cost, 'purchase', r.id, 'Purchase');
-        const upd = {};
-        if (it.price > 0) upd.price = r2(it.price);
-        const p = await getRow('parts', it.part_id);
-        if (!p.supplier_id) { upd.supplier_id = s.id; upd.supplier_name = s.name; }
-        if (Object.keys(upd).length) await F.updateDoc(ref('parts', it.part_id), upd);
+        await plan.move(it.part_id, 'in', it.qty, it.unit_cost, 'purchase', 'Purchase');
+        if (it.price > 0) plan.set(it.part_id, { price: r2(it.price) });
+        if (!plan.part(it.part_id).supplier_id) plan.set(it.part_id, { supplier_id: s.id, supplier_name: s.name });
       }
     }
     const b = F.writeBatch(db);
+    plan.apply(b, r.id);
     b.set(r, d);
     b.update(ref('suppliers', s.id), { balance: inc(isReturn ? -total : total) });
     await b.commit();
@@ -1029,13 +1064,19 @@ function init() {
         if (part && num(part.qty) < num(it.qty)) throw bad('insufficient_stock', { part: part.name_en, available: part.qty });
       }
     }
-    for (const it of p.items || []) await stockMove(it.part_id, p.is_return ? 'in' : 'out', it.qty, it.unit_cost, 'purchase_void', id, 'Purchase deleted');
+    const plan = await stockPlan();
+    for (const it of p.items || []) if (await getRow('parts', it.part_id)) await plan.move(it.part_id, p.is_return ? 'in' : 'out', it.qty, it.unit_cost, 'purchase_void', 'Purchase deleted');
+    const b = F.writeBatch(db);
+    let supDelta = p.is_return ? p.total : -p.total;
     for (const t of await all('transactions', W('ref_type', '==', 'purchase'), W('ref_id', '==', String(id)))) {
-      await removeTx(t);
-      await F.updateDoc(ref('suppliers', p.supplier_id), { balance: inc(t.direction === 'out' ? t.amount : -t.amount) });
+      b.delete(ref('transactions', t.id));
+      b.update(ref('accounts', t.account_id), { balance: inc(t.direction === 'in' ? -t.amount : t.amount) });
+      supDelta += t.direction === 'out' ? t.amount : -t.amount;
     }
-    await F.updateDoc(ref('suppliers', p.supplier_id), { balance: inc(p.is_return ? p.total : -p.total) });
-    await F.deleteDoc(ref('purchases', id));
+    b.update(ref('suppliers', p.supplier_id), { balance: inc(r2(supDelta)) });
+    plan.apply(b, id);
+    b.delete(ref('purchases', id));
+    await b.commit();
     await audit('delete', 'purchases', id);
   }
 
@@ -1544,6 +1585,50 @@ function init() {
     if (!(num(body.amount) > 0) || !body.account_id) throw bad('invalid_amount');
     await addTx({ date: body.date, account_id: body.account_id, direction: 'out', amount: body.amount, category: 'supplier_payment', description: body.description || `Payment to ${s.name}`, party_type: 'supplier', party_id: s.id, method: body.method || 'cash' });
     return { ok: true };
+  });
+  // counter sales saved by older versions without their invoice number (INV #null): match each to its invoice,
+  // or to the deletion of that invoice (stock already back), and list the ones whose invoice was never saved
+  const tms = (s) => new Date(String(s || '').replace(' ', 'T')).getTime() || 0;
+  async function stockOrphans() {
+    const moves = await all('stock_moves', W('ref_type', '==', 'invoice'));
+    const outs = moves.filter((m) => !m.ref_id && num(m.qty) < 0 && !m.fixed).sort((a, b) => tms(a.date) - tms(b.date));
+    if (!outs.length) return { linked: [], compensated: [], orphans: [] };
+    const invs = await all('invoices', W('date', '>=', outs[0].date.slice(0, 10)));
+    const invIds = new Set(invs.map((i) => i.id));
+    const used = new Map(); // invoice|part -> qty already matched
+    const usedRet = new Set();
+    const linked = []; const compensated = []; const orphans = [];
+    for (const m of outs) {
+      const q = Math.abs(num(m.qty)); const t0 = tms(m.date);
+      const inv = invs.filter((i) => { const dt = tms(i.created_at) - t0; return dt >= -120000 && dt <= 1800000; })
+        .sort((a, b) => Math.abs(tms(a.created_at) - t0) - Math.abs(tms(b.created_at) - t0))
+        .find((i) => { const k = i.id + '|' + m.part_id; const have = (i.items || []).filter((x) => String(x.part_id) === String(m.part_id)).reduce((s, x) => s + num(x.qty, 1), 0); return have - (used.get(k) || 0) >= q - 0.001; });
+      if (inv) { const k = inv.id + '|' + m.part_id; used.set(k, (used.get(k) || 0) + q); linked.push({ id: m.id, ref_id: inv.id, no: inv.no }); continue; }
+      const ret = moves.find((x) => !usedRet.has(x.id) && num(x.qty) > 0 && String(x.part_id) === String(m.part_id) && Math.abs(num(x.qty) - q) < 0.001 && tms(x.date) >= t0 && /deleted|cancelled/i.test(x.notes || '') && (!x.ref_id || !invIds.has(x.ref_id) || (invs.find((i) => i.id === x.ref_id) || {}).status === 'cancelled'));
+      if (ret) { usedRet.add(ret.id); compensated.push({ id: m.id, ref_id: ret.ref_id || null }); continue; }
+      orphans.push({ id: m.id, date: m.date, part_id: m.part_id, part_no: m.part_no, name_en: m.name_en, name_ar: m.name_ar, qty: q, unit_cost: m.unit_cost, user_name: m.user_name });
+    }
+    return { linked, compensated, orphans };
+  }
+  route('GET', '/api/stock/orphans', MGMT, () => stockOrphans());
+  route('POST', '/api/stock/orphans', MGMT, async ({ body }) => {
+    const r = await stockOrphans();
+    const back = new Set((body.return_ids || []).map(String));
+    const b = F.writeBatch(db); let n = 0;
+    for (const x of r.linked) { b.update(ref('stock_moves', x.id), { ref_id: x.ref_id }); n++; }
+    for (const x of r.compensated) { b.update(ref('stock_moves', x.id), { ref_id: x.ref_id, notes: 'Counter sale (invoice deleted, stock returned)' }); n++; }
+    if (n) await b.commit();
+    const plan = await stockPlan();
+    const fixed = r.orphans.filter((o) => back.has(String(o.id)));
+    for (const o of fixed) if (await getRow('parts', o.part_id)) await plan.move(o.part_id, 'return', o.qty, o.unit_cost, 'stock_fix', 'Back to stock: counter sale without an invoice');
+    if (fixed.length) {
+      const b2 = F.writeBatch(db);
+      plan.apply(b2, null);
+      for (const o of fixed) b2.update(ref('stock_moves', o.id), { fixed: 1, notes: 'Counter sale without an invoice (returned to stock)' });
+      await b2.commit();
+    }
+    await audit('stock_orphans', 'stock_moves', null, { linked: r.linked.length, compensated: r.compensated.length, returned: fixed.length });
+    return { linked: r.linked.length, compensated: r.compensated.length, returned: fixed.length };
   });
   route('POST', '/api/stock/adjust', STORE, async ({ body }) => {
     const { part_id, type, qty, notes } = body;

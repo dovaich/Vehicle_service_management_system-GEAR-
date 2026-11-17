@@ -40,7 +40,11 @@ service cloud.firestore {
     match /reminders/{id} { allow read, create, update: if active(); allow delete: if hasRole(FRONT()); }
     match /attachments/{id} { allow read, create, delete: if active(); }
     match /parts/{id} { allow read, update: if active(); allow create: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
-    match /stock_moves/{id} { allow read: if hasRole(SUPP()); allow create: if active(); }
+    match /stock_moves/{id} {
+      allow read: if hasRole(SUPP()); allow create: if active();
+      // the manager links an old counter sale to its invoice, or marks it as returned to stock
+      allow update: if hasRole(MGMT()) && onlyChanges(['ref_id', 'notes', 'fixed']);
+    }
     match /employees/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
     match /service_types/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
 
