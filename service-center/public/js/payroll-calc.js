@@ -29,7 +29,8 @@
   function config(s = {}) {
     const start = toMin(s.work_start) ?? 9 * 60;
     let end = toMin(s.work_end) ?? 17 * 60;
-    if (end <= start) end = start + 8 * 60;
+    if (end === start) end = start + 8 * 60;
+    else if (end < start) end += 24 * 60; // night shift ending after midnight (e.g. 14:00 → 01:00)
     return {
       start, end, dayMinutes: end - start,
       workDaysMonth: Math.max(1, num(s.work_days_month, 26)),
@@ -68,7 +69,8 @@
   function dayStats(rec, cfg, isWorkDay = true) {
     const out = { late: 0, early: 0, overtime: 0, worked: 0 };
     if (!rec || rec.status !== 'present') return out;
-    const a = toMin(rec.check_in); const b = toMin(rec.check_out);
+    const a = toMin(rec.check_in); let b = toMin(rec.check_out);
+    if (a !== null && b !== null && b <= a) b += 24 * 60; // left after midnight: still the same working day
     if (a !== null && b !== null && b > a) out.worked = b - a;
     if (!isWorkDay) { out.overtime = out.worked; return out; } // working on a day off is all overtime
     if (a !== null && a > cfg.start + cfg.grace) out.late = a - cfg.start;
@@ -160,5 +162,7 @@
     if (res.salary_part < 0) { res.carry_bonus = r2(-res.salary_part); res.salary_part = 0; }
     return res;
   }
-  return { paySplit, calc, config, empConfig, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
+  // the day before a date (a check-out after midnight belongs to yesterday's record)
+  const prevDay = (date) => addDays(date, -1);
+  return { prevDay, paySplit, calc, config, empConfig, dayStats, monthDays, periodDays, periodLabel, weekOf, isWeek, cycleOf, weekday, toMin, PAID_LEAVE };
 }));

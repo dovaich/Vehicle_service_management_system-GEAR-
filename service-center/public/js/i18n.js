@@ -173,7 +173,7 @@ window.I18N = {
   action: ['العملية', 'Action'], entity: ['الكيان', 'Entity'], install_app: ['تثبيت التطبيق', 'Install app'],
   // attendance
   attendance: ['الحضور والانصراف', 'Attendance'], my_attendance: ['حضوري اليوم', 'My attendance'], check_in: ['الحضور', 'Check-in'], check_out: ['الانصراف', 'Check-out'],
-  punch_in: ['تسجيل حضور', 'Check in'], punch_out: ['تسجيل انصراف', 'Check out'], day_done: ['تم تسجيل اليوم', 'Day recorded'], day_off: ['إجازة أسبوعية', 'Day off'],
+  punch_in: ['تسجيل حضور', 'Check in'], punch_out: ['تسجيل انصراف', 'Check out'], punch_out_prev: ['انصراف (وردية امبارح)', 'Check out (yesterday\'s shift)'], day_done: ['تم تسجيل اليوم', 'Day recorded'], day_off: ['إجازة أسبوعية', 'Day off'],
   today_board: ['حضور اليوم', "Today's board"], monthly_sheet: ['الكشف الشهري', 'Monthly sheet'], late_minutes: ['تأخير/خروج بدري (دقيقة)', 'Late/early (min)'],
   overtime: ['أوفرتايم', 'Overtime'], worked_hours: ['ساعات العمل', 'Worked hours'], working_days: ['أيام العمل', 'Working days'], present_days: ['حضور', 'Present'],
   absent_days: ['غياب', 'Absent'], leave_days: ['إجازات مدفوعة', 'Paid leave'], salary_due: ['المرتب المستحق', 'Salary due'], absence_deduction: ['خصم الغياب', 'Absence deduction'],

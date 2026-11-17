@@ -70,7 +70,8 @@
           { key: 'check_out', label: t('check_out'), render: (r) => esc((r.record && r.record.check_out) || '-') },
           { key: 'late', label: t('late_minutes'), cls: 'num', render: (r) => (r.late ? `<b class="neg">${r.late}</b>` : '-') },
           { key: 'overtime', label: t('overtime'), cls: 'num', render: (r) => (r.overtime ? `<b class="pos">${hm(r.overtime)}</b>` : '-') },
-          ...(canEdit ? [{ key: 'a', label: '', cls: 'actions-wide', render: (r) => `${isToday && !(r.record && r.record.check_in) ? `<button class="btn btn-sm btn-ok" data-p="in">▶ ${t('punch_in')}</button>` : ''}
+          ...(canEdit ? [{ key: 'a', label: '', cls: 'actions-wide', render: (r) => `${isToday && r.open_prev && !(r.record && r.record.check_in) ? `<button class="btn btn-sm btn-danger" data-p="out">⏹ ${t('punch_out_prev')}</button>` : ''}
+            ${isToday && !r.open_prev && !(r.record && r.record.check_in) ? `<button class="btn btn-sm btn-ok" data-p="in">▶ ${t('punch_in')}</button>` : ''}
             ${isToday && r.record && r.record.check_in && !r.record.check_out ? `<button class="btn btn-sm btn-danger" data-p="out">⏹ ${t('punch_out')}</button>` : ''}
             <button class="btn btn-sm" data-e>✎ ${t('edit')}</button>` }] : []),
         ], d.rows);

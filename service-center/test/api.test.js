@@ -261,6 +261,24 @@ test('full service-center flow', async () => {
   assert.equal(prSep.find((x) => x.employee_id === mE.id).net, 2531.25);
   await call('PUT', '/api/settings', { attendance_payroll: '0' });
   assert.equal((await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`)).salary_due, 2600, 'off = full salary');
+  // checking out after midnight: overtime, not "left early"
+  const nE = await call('POST', '/api/employees', { name: 'Night Guy', job: 'technician', pay_type: 'monthly', salary: 2600, hire_date: '2026-09-28', work_start: '10:00', work_end: '22:00' });
+  await call('PUT', '/api/attendance', { employee_id: nE.id, date: '2026-09-28', status: 'present', check_in: '10:40', check_out: '00:30' });
+  const nm = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${nE.id}`);
+  assert.equal(nm.late_minutes, 40); assert.equal(nm.early_minutes, 0); assert.equal(nm.overtime_minutes, 150);
+  // punch-out button after midnight: yesterday's open day shows up and gets closed
+  const yday = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+  // (a shift starting at 23:59, so "before today's shift starts" holds whatever time the test runs)
+  const lE = await call('POST', '/api/employees', { name: 'Late Shift', job: 'technician', pay_type: 'monthly', salary: 2600, work_start: '23:59', work_end: '08:00' });
+  await call('PUT', '/api/attendance', { employee_id: lE.id, date: yday, status: 'present', check_in: '23:50' });
+  assert.equal((await call('GET', '/api/attendance')).rows.find((x) => x.employee_id === lE.id).open_prev, true);
+  const closed = await call('POST', '/api/attendance/punch', { action: 'out', employee_id: lE.id });
+  assert.equal(closed.date, yday); assert.ok(closed.check_out);
+  assert.equal((await call('GET', '/api/attendance')).rows.find((x) => x.employee_id === lE.id).open_prev, false);
+  // a forgotten punch-out is not closed the next afternoon (start 10:00 has passed... unless it is still early morning)
+  await call('PUT', '/api/attendance', { employee_id: nE.id, date: yday, status: 'present', check_in: '10:00' });
+  const early = new Date().getHours() < 10;
+  await call('POST', '/api/attendance/punch', { action: 'out', employee_id: nE.id }, { expect: early ? undefined : 400 });
 
   // attendance is recorded by the manager / accountant only - staff cannot check themselves in
   await call('POST', '/api/users', { username: 'emp1', name: 'Emp', role: 'technician', password: 'secret1', employee_id: mE.id });

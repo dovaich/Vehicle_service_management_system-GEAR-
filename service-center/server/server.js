@@ -1665,6 +1665,8 @@ route('GET', '/api/attendance', ATT_READ, ({ query }) => {
   const date = query.date || today();
   const emps = all('SELECT * FROM employees WHERE active=1 ORDER BY name');
   const recs = all('SELECT * FROM attendance WHERE date=?', date);
+  // still open from yesterday (left after midnight, not punched out yet)
+  const openPrev = date === today() ? all("SELECT employee_id FROM attendance WHERE date=? AND status='present' AND check_in IS NOT NULL AND check_out IS NULL", PAY.prevDay(date)).map((x) => x.employee_id) : [];
   const settings = D.allSettings();
   const work = !PAY.config(settings).weekend.includes(PAY.weekday(date));
   return {
@@ -1673,7 +1675,7 @@ route('GET', '/api/attendance', ATT_READ, ({ query }) => {
       const r = recs.find((x) => x.employee_id === e.id);
       const cfg = PAY.empConfig(e, settings); // the employee's own schedule
       const wd = !cfg.weekend.includes(PAY.weekday(date));
-      return { employee_id: e.id, name: e.name, job: e.job, record: r || null, work_day: wd, schedule: `${e.work_start || settings.work_start || '09:00'}-${e.work_end || settings.work_end || '17:00'}`, by_attendance: cfg.byAttendance, ...PAY.dayStats(r, cfg, wd) };
+      return { employee_id: e.id, name: e.name, job: e.job, record: r || null, open_prev: openPrev.includes(e.id) && PAY.toMin(nowHM()) < cfg.start, work_day: wd, schedule: `${e.work_start || settings.work_start || '09:00'}-${e.work_end || settings.work_end || '17:00'}`, by_attendance: cfg.byAttendance, ...PAY.dayStats(r, cfg, wd) };
     }),
   };
 });
@@ -1697,9 +1699,15 @@ route('POST', '/api/attendance/punch', ATT_WRITE, ({ body, user }) => {
   const empId = Number(body.employee_id);
   if (!empId) throw bad('required', { field: 'employee_id' });
   if (!get('SELECT id FROM employees WHERE id=?', empId)) throw new HttpError(404, 'not_found');
-  const d = today(); const tm = nowHM();
-  const r = get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, d);
+  let d = today(); const tm = nowHM();
+  let r = get('SELECT * FROM attendance WHERE employee_id=? AND date=?', empId, d);
   if (body.action === 'out') {
+    // leaving after midnight closes yesterday's open day
+    const cfgE = PAY.empConfig(get('SELECT * FROM employees WHERE id=?', empId), D.allSettings());
+    if ((!r || !r.check_in) && PAY.toMin(tm) < cfgE.start) { // only before today's shift starts (not a forgotten punch-out)
+      const y = get('SELECT * FROM attendance WHERE employee_id=? AND date=? AND check_in IS NOT NULL AND check_out IS NULL', empId, PAY.prevDay(d));
+      if (y) { r = y; d = y.date; }
+    }
     if (!r || !r.check_in) throw bad('not_checked_in');
     run('UPDATE attendance SET check_out=? WHERE id=?', tm, r.id);
   } else {

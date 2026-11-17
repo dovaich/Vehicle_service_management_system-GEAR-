@@ -1716,6 +1716,8 @@ function init() {
     const date = query.date || today();
     const list = (await emps()).filter((e) => Number(e.active)).sort((a, b) => (a.name < b.name ? -1 : 1));
     const recs = (await all('attendance', W('date', '==', date))).map(fixAtt);
+    // still open from yesterday (left after midnight, not punched out yet)
+    const prev = date === today() ? (await all('attendance', W('date', '==', PAY.prevDay(date)))).filter((x) => x.status === 'present' && x.check_in && !x.check_out).map((x) => x.employee_id) : [];
     const st = await settings();
     const work = !PAY.config(st).weekend.includes(PAY.weekday(date));
     return {
@@ -1724,7 +1726,7 @@ function init() {
         const r = recs.find((x) => x.employee_id === e.id) || null;
         const cfg = PAY.empConfig(e, st); // the employee's own schedule
         const wd = !cfg.weekend.includes(PAY.weekday(date));
-        return { employee_id: e.id, name: e.name, job: e.job, record: r, work_day: wd, schedule: `${e.work_start || st.work_start || '09:00'}-${e.work_end || st.work_end || '17:00'}`, by_attendance: cfg.byAttendance, ...PAY.dayStats(r, cfg, wd) };
+        return { employee_id: e.id, name: e.name, job: e.job, record: r, open_prev: prev.includes(e.id) && PAY.toMin(nowStr().slice(11, 16)) < cfg.start, work_day: wd, schedule: `${e.work_start || st.work_start || '09:00'}-${e.work_end || st.work_end || '17:00'}`, by_attendance: cfg.byAttendance, ...PAY.dayStats(r, cfg, wd) };
       }),
     };
   });
@@ -1750,10 +1752,15 @@ function init() {
     const empId = String(body.employee_id || '');
     if (!empId) throw bad('required', { field: 'employee_id' });
     const e = await mustRow('employees', empId);
-    const d = today(); const id = attId(empId, d);
-    const r = await getRow('attendance', id).catch(() => null);
+    let d = today(); let id = attId(empId, d);
+    let r = await getRow('attendance', id).catch(() => null);
     const tm = nowStr().slice(11, 16);
     if (body.action === 'out') {
+      // leaving after midnight closes yesterday's open day
+      if ((!r || !r.check_in) && PAY.toMin(tm) < PAY.empConfig(e, await settings()).start) { // only before today's shift starts
+        const y = await getRow('attendance', attId(empId, PAY.prevDay(d))).catch(() => null);
+        if (y && y.check_in && !y.check_out) { r = y; d = y.date; id = attId(empId, d); }
+      }
       if (!r || !r.check_in) throw bad('not_checked_in');
       if (r.check_out && !mgr) throw bad('already_checked_out');
       await F.updateDoc(ref('attendance', id), { check_out: tm, check_out_at: F.serverTimestamp() });
