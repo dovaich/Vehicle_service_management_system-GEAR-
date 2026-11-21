@@ -161,9 +161,9 @@ function init() {
       async afterDelete(id, old) { await F.updateDoc(ref('customers', old.customer_id), { vehicles_count: inc(-1) }).catch(() => {}); await refreshPlates(old.customer_id); },
     },
     employees: {
-      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'attendance_based', 'work_start', 'work_end', 'weekend_days', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
+      cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'attendance_based', 'work_start', 'work_end', 'weekend_days', 'overtime_hour_rate', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'], required: ['name'],
       kw: (r) => [r.name, r.phone], order: ['name', 'asc'], small: true, filters: ['job', 'active'], read: ANY, write: MGMT,
-      numeric: ['salary', 'labor_commission', 'parts_commission', 'active'], hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id'] },
+      numeric: ['salary', 'labor_commission', 'parts_commission', 'active', 'overtime_hour_rate'], hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id', 'overtime_hour_rate'] },
       after: () => { cache.emps = null; },
       async beforeDelete(id) { if ((await all('bonuses', W('employee_id', '==', id), L(1))).length) throw bad('employee_in_use'); },
     },

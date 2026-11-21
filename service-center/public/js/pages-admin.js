@@ -15,6 +15,7 @@
       { name: 'attendance_based', type: 'select', options: [['', t('att_default')], ['1', t('att_yes')], ['0', t('att_no')]], noEmpty: true, span: 2, help: t('att_based_help') },
       { name: 'work_start', type: 'time', help: t('emp_schedule_help') }, { name: 'work_end', type: 'time' },
       { name: 'weekend_days', type: 'chips', options: G.WEEKDAYS().map((d, i) => [String(i), d]), span: 2, help: t('emp_schedule_help') },
+      { name: 'overtime_hour_rate', type: 'number', attrs: 'min="0" step="0.01"', span: 2, help: t('overtime_hour_rate_help') },
       { name: 'notes', type: 'textarea', span: 2 }],
     filters: [{ name: 'job', type: 'select', options: G.opt(JOBS, 'j_') }],
     onSaved: () => G.loadEmployees(true),

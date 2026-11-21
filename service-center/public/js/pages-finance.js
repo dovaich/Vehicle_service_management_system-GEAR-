@@ -578,7 +578,7 @@
             { key: 'name', label: t('employee'), render: (r) => `<b>${esc(r.name)}</b><br><small class="muted">${t('j_' + r.job)} · ${t('pay_' + (r.pay_type || 'monthly'))}</small>` },
             { key: 'salary', cls: 'num', render: (r) => G.money(r.salary) },
             { key: 'att', label: t('attendance'), render: (r) => `<small>${t('present_days')}: <b>${r.present_days}</b> · ${t('absent_days')}: <b class="${r.absent_days + r.unpaid_days ? 'neg' : ''}">${r.absent_days + r.unpaid_days}</b><br>${t('late_minutes')}: ${r.late_minutes + r.early_minutes} · ${t('overtime')}: ${Math.round(r.overtime_minutes / 6) / 10}h</small>` },
-            { key: 'salary_due', cls: 'num', render: (r) => `${G.money(r.salary_due)}${r.by_attendance && (r.absence_deduction || r.late_deduction || r.overtime_pay) ? `<br><small class="muted">-${G.num(r.absence_deduction + r.late_deduction)} +${G.num(r.overtime_pay)}</small>` : ''}` },
+            { key: 'salary_due', cls: 'num', render: (r) => `${G.money(r.salary_due)}${r.absence_deduction || r.late_deduction || r.overtime_pay ? `<br><small class="muted">-${G.num(r.absence_deduction + r.late_deduction)} +${G.num(r.overtime_pay)}</small>` : ''}` },
             { key: 'salary_paid', cls: 'num', render: (r) => G.money(r.salary_paid) }, { key: 'bonuses', label: t('bonus'), cls: 'num', render: (r) => `<span class="pos">${G.money(r.bonuses)}</span>` },
             { key: 'deductions', cls: 'num', render: (r) => `<span class="neg">${G.money(r.deductions)}</span>` },
             { key: 'advances', cls: 'num', render: (r) => (r.advances ? `<span class="neg">${G.money(r.advances)}</span>` : '-') },

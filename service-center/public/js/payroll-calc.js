@@ -116,15 +116,18 @@
       res.days.push({ date, weekday: weekday(date), work_day: isWork, status, check_in: rec ? rec.check_in || '' : '', check_out: rec ? rec.check_out || '' : '', notes: rec ? rec.notes || '' : '', id: rec ? rec.id : null, ...st });
     }
     const short = cfg.deductLate ? res.late_minutes + res.early_minutes : 0;
+    // a fixed amount per overtime hour set on the employee replaces the general "rate x salary" rule
+    const otHour = num(emp.overtime_hour_rate, 0);
+    const otPay = (rateBased) => (otHour > 0 ? r2((res.overtime_minutes / 60) * otHour) : r2(rateBased));
     if (payType === 'daily') {
       const minRate = salary / cfg.dayMinutes;
       const base = (res.present_days + res.leave_days) * salary;
       res.late_deduction = r2(short * minRate);
-      res.overtime_pay = r2(res.overtime_minutes * minRate * cfg.otRate);
+      res.overtime_pay = otPay(res.overtime_minutes * minRate * cfg.otRate);
       res.salary_due = r2(Math.max(0, base - res.late_deduction + res.overtime_pay));
     } else if (payType === 'hourly') {
       const regular = Math.max(0, res.worked_minutes - res.overtime_minutes) + res.leave_days * cfg.dayMinutes;
-      res.overtime_pay = r2((res.overtime_minutes / 60) * salary * cfg.otRate);
+      res.overtime_pay = otPay((res.overtime_minutes / 60) * salary * cfg.otRate);
       res.salary_due = r2((regular / 60) * salary + res.overtime_pay);
     } else {
       // weekly salary: a day is salary / working days in the week; monthly: salary / working days per month
@@ -133,11 +136,13 @@
       const minRate = dayRate / cfg.dayMinutes;
       if (!cfg.byAttendance) {
         res.by_attendance = false;
-        res.salary_due = r2(salary);
+        // full salary, no deductions; overtime is still paid when the employee has a fixed overtime hour rate
+        res.overtime_pay = otHour > 0 ? otPay(0) : 0;
+        res.salary_due = r2(salary + res.overtime_pay);
       } else {
         res.absence_deduction = r2((res.absent_days + res.unpaid_days) * dayRate);
         res.late_deduction = r2(short * minRate);
-        res.overtime_pay = r2(res.overtime_minutes * minRate * cfg.otRate);
+        res.overtime_pay = otPay(res.overtime_minutes * minRate * cfg.otRate);
         res.salary_due = r2(Math.max(0, salary - res.absence_deduction - res.late_deduction + res.overtime_pay));
       }
     }

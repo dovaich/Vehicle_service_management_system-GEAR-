@@ -397,6 +397,8 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name='in_repo
 for (const c of ['settled_tx', 'carried_from_tx']) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('bonuses') WHERE name='${c}'`).get()) db.exec(`ALTER TABLE bonuses ADD COLUMN ${c} INTEGER`);
 }
+// fixed overtime pay per hour for one employee (empty = the general overtime rate)
+if (!db.prepare("SELECT 1 FROM pragma_table_info('employees') WHERE name='overtime_hour_rate'").get()) db.exec('ALTER TABLE employees ADD COLUMN overtime_hour_rate REAL');
 for (const c of ['attendance_based', 'work_start', 'work_end', 'weekend_days']) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('employees') WHERE name='${c}'`).get()) db.exec(`ALTER TABLE employees ADD COLUMN ${c} TEXT`);
 }

@@ -261,6 +261,16 @@ test('full service-center flow', async () => {
   assert.equal(prSep.find((x) => x.employee_id === mE.id).net, 2531.25);
   await call('PUT', '/api/settings', { attendance_payroll: '0' });
   assert.equal((await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`)).salary_due, 2600, 'off = full salary');
+  // a fixed overtime hour rate: 2h x 50 = 100, paid even on a full salary
+  await call('PUT', `/api/employees/${mE.id}`, { overtime_hour_rate: 50 });
+  let om = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`);
+  assert.equal(om.overtime_pay, 100); assert.equal(om.salary_due, 2700);
+  await call('PUT', '/api/settings', { attendance_payroll: '1' });
+  om = await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`);
+  assert.equal(om.overtime_pay, 100); assert.equal(om.salary_due, 2593.75, 'by attendance: 2600 - 100 absence - 6.25 late + 100');
+  await call('PUT', '/api/settings', { attendance_payroll: '0' });
+  await call('PUT', `/api/employees/${mE.id}`, { overtime_hour_rate: '' });
+  assert.equal((await call('GET', `/api/attendance/month?period=2026-09&employee_id=${mE.id}`)).salary_due, 2600, 'empty = general rule');
   // checking out after midnight: overtime, not "left early"
   const nE = await call('POST', '/api/employees', { name: 'Night Guy', job: 'technician', pay_type: 'monthly', salary: 2600, hire_date: '2026-09-28', work_start: '10:00', work_end: '22:00' });
   await call('PUT', '/api/attendance', { employee_id: nE.id, date: '2026-09-28', status: 'present', check_in: '10:40', check_out: '00:30' });

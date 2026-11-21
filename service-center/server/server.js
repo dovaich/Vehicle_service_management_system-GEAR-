@@ -115,7 +115,7 @@ const RES = {
   },
   employees: {
     table: 'employees',
-    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'attendance_based', 'work_start', 'work_end', 'weekend_days', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
+    cols: ['name', 'phone', 'job', 'national_id', 'hire_date', 'pay_type', 'pay_cycle', 'attendance_based', 'work_start', 'work_end', 'weekend_days', 'overtime_hour_rate', 'salary', 'labor_commission', 'parts_commission', 'active', 'notes'],
     required: ['name'],
     select: 'SELECT e.* FROM employees e',
     alias: 'e',
@@ -123,7 +123,7 @@ const RES = {
     filters: { job: 'e.job', active: 'e.active' },
     order: 'e.active DESC, e.name',
     read: ANY, write: MGMT,
-    hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id'] },
+    hideFor: { roles: ['advisor', 'technician', 'storekeeper'], cols: ['salary', 'national_id', 'overtime_hour_rate'] },
   },
   service_types: {
     table: 'service_types',
