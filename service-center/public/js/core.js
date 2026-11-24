@@ -89,10 +89,12 @@
   G.accLabel = (a) => (a.balance === null || a.balance === undefined ? `${a.name} 🔒` : `${a.name} (${G.num(a.balance)})`);
 
   // ---------------- permissions ----------------
-  G.can = (roles) => !!G.user && (roles === '*' || (G.user.roles || [G.user.role]).some((r) => roles.includes(r)));
+  // a viewer-only account (reviews invoices) is not part of "all staff"
+  G.viewerOnly = () => !!G.user && (G.user.roles || [G.user.role]).every((r) => r === 'viewer');
+  G.can = (roles) => !!G.user && (roles === '*' ? !G.viewerOnly() : (G.user.roles || [G.user.role]).some((r) => roles.includes(r)));
   G.R = {
     FRONT: ['admin', 'manager', 'advisor'], SHOP: ['admin', 'manager', 'advisor', 'technician'], MONEY: ['admin', 'manager', 'accountant'],
-    STORE: ['admin', 'manager', 'storekeeper'], MGMT: ['admin', 'manager'], ADMIN: ['admin'], BILL: ['admin', 'manager', 'advisor', 'accountant'],
+    STORE: ['admin', 'manager', 'storekeeper'], MGMT: ['admin', 'manager'], ADMIN: ['admin'], BILL: ['admin', 'manager', 'advisor', 'accountant'], INV_READ: ['admin', 'manager', 'advisor', 'accountant', 'viewer'],
     SUPP: ['admin', 'manager', 'accountant', 'storekeeper'],
   };
 
@@ -506,7 +508,8 @@
   };
   G.route = async () => {
     if (!G.user) return;
-    const hash = (location.hash || '#/').slice(1).split('?')[0] || '/';
+    let hash = (location.hash || '#/').slice(1).split('?')[0] || '/';
+    if (hash === '/' && G.viewerOnly()) { location.hash = '#/invoices'; return; } // the viewer's home is the invoice list
     const query = Object.fromEntries(new URLSearchParams((location.hash.split('?')[1]) || ''));
     // every navigation renders into its own fresh container: a page that is still loading when the user
     // moves on finishes into a detached element instead of drawing over the new page

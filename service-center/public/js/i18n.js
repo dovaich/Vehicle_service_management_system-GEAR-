@@ -160,7 +160,7 @@ window.I18N = {
   count: ['العدد', 'Count'], purchases_total: ['إجمالي المشتريات', 'Purchases'], daily_sales: ['المبيعات اليومية', 'Daily sales'], profit_loss: ['الأرباح والخسائر', 'Profit & loss'],
   // users & settings
   role: ['الصلاحية', 'Role'], r_admin: ['مدير النظام', 'Administrator'], r_manager: ['مدير المركز', 'Manager'], r_advisor: ['مستشار خدمة / استقبال', 'Service advisor'],
-  r_technician: ['فني', 'Technician'], r_accountant: ['محاسب', 'Accountant'], r_storekeeper: ['أمين مخزن', 'Storekeeper'], linked_employee: ['الموظف المرتبط', 'Linked employee'],
+  r_technician: ['فني', 'Technician'], r_accountant: ['محاسب', 'Accountant'], r_storekeeper: ['أمين مخزن', 'Storekeeper'], r_viewer: ['مشاهد (مراجعة الفواتير فقط)', 'Viewer (invoices only)'], linked_employee: ['الموظف المرتبط', 'Linked employee'],
   extra_roles: ['صلاحيات إضافية', 'Extra roles'],
   extra_roles_help: ['المستخدم ياخد صلاحيات الأدوار دي كمان بجانب صلاحيته الأساسية (مثلاً محاسب + أمين مخزن)', 'The user also gets these roles on top of the main role (e.g. accountant + storekeeper)'],
   password_hint: ['اتركها فارغة لعدم التغيير', 'Leave blank to keep'], center_info: ['بيانات المركز', 'Center information'], center_name_ar: ['اسم المركز (عربي)', 'Center name (Arabic)'],

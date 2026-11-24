@@ -2,7 +2,7 @@
 (function () {
   const { t, esc, R } = G;
   const JOBS = ['technician', 'electrician', 'advisor', 'manager', 'accountant', 'storekeeper', 'bodyshop', 'washer', 'other'];
-  const ROLES = ['admin', 'manager', 'advisor', 'technician', 'accountant', 'storekeeper'];
+  const ROLES = ['admin', 'manager', 'advisor', 'technician', 'accountant', 'storekeeper', 'viewer'];
 
   G.addRoute('/employees', (view) => G.listPage(view, {
     title: t('employees'), res: 'employees', csvName: 'employees',

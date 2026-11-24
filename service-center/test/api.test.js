@@ -197,6 +197,21 @@ test('full service-center flow', async () => {
   assert.equal(woTech.parts[0].unit_cost, undefined);
   cookie = adminCookie;
 
+  // viewer: reviews invoices only
+  await call('POST', '/api/users', { username: 'view1', name: 'Viewer', role: 'viewer', password: 'secret1' });
+  await call('POST', '/api/auth/login', { username: 'view1', password: 'secret1' });
+  assert.equal((await call('GET', '/api/auth/me')).user.role, 'viewer');
+  await call('GET', '/api/settings');
+  assert.ok((await call('GET', '/api/invoices')).total >= 1);
+  const vInv = await call('GET', `/api/invoices/${inv.id}/full`);
+  assert.equal(vInv.parts_cost, undefined);
+  for (const u of ['/api/dashboard', '/api/customers', '/api/parts', '/api/work-orders', '/api/accounts', '/api/transactions', '/api/search?q=WBA', '/api/attendance/month']) await call('GET', u, undefined, { expect: 403 });
+  await call('POST', '/api/invoices', { items: [{ description: 'x', unit_price: 1 }] }, { expect: 403 });
+  await call('POST', `/api/invoices/${inv.id}/payments`, { amount: 1, account_id: cash.id }, { expect: 403 });
+  await call('DELETE', `/api/invoices/${inv.id}`, undefined, { expect: 403 });
+  await call('PUT', `/api/invoices/${inv.id}/full`, { items: [] }, { expect: 403 });
+  cookie = adminCookie;
+
   // extra roles: accountant gets storekeeper powers only when granted
   const acc = await call('POST', '/api/users', { username: 'acc1', name: 'Acc', role: 'accountant', password: 'secret1' });
   await call('POST', '/api/auth/login', { username: 'acc1', password: 'secret1' });

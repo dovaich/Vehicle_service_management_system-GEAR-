@@ -65,8 +65,8 @@ function init() {
   }
 
   // ------------------------------------------------------------------ auth
-  const ROLES = ['admin', 'manager', 'advisor', 'technician', 'accountant', 'storekeeper'];
-  const ANY = ROLES; const FRONT = ['admin', 'manager', 'advisor']; const SHOP = ['admin', 'manager', 'advisor', 'technician'];
+  const ROLES = ['admin', 'manager', 'advisor', 'technician', 'accountant', 'storekeeper', 'viewer'];
+  const ANY = ROLES.filter((r) => r !== 'viewer'); const INV_READ = ['admin', 'manager', 'advisor', 'accountant', 'viewer']; const FRONT = ['admin', 'manager', 'advisor']; const SHOP = ['admin', 'manager', 'advisor', 'technician'];
   const MONEY = ['admin', 'manager', 'accountant']; const STORE = ['admin', 'manager', 'storekeeper']; const MGMT = ['admin', 'manager'];
   const SUPP = ['admin', 'manager', 'accountant', 'storekeeper']; const BILL = ['admin', 'manager', 'advisor', 'accountant'];
   let me = null;
@@ -267,7 +267,7 @@ function init() {
     },
     invoices: {
       cols: ['notes'], kw: (r) => [r.no, r.customer_name, r.customer_phone, r.plate, r.work_order_no], order: ['created_at', 'desc'], dateCol: 'date',
-      filters: ['status', 'customer_id', 'vehicle_id'], special: { unpaid: ['open', '==', true] }, read: BILL, write: BILL, noCreate: true, noDelete: true,
+      filters: ['status', 'customer_id', 'vehicle_id'], special: { unpaid: ['open', '==', true] }, read: INV_READ, write: BILL, noCreate: true, noDelete: true,
     },
     accounts: {
       cols: ['name', 'type', 'opening_balance', 'active', 'in_reports'], required: ['name'], kw: (r) => [r.name], order: ['created_at', 'asc'], small: true, filters: ['active'],
@@ -721,6 +721,15 @@ function init() {
   const invStatus = (total, paid, cancelled) => (cancelled ? 'cancelled' : total === 0 ? 'paid' : paid <= 0 ? 'unpaid' : paid + 0.009 >= total ? 'paid' : 'partial');
   async function invoiceFull(id) {
     const inv = await getResource('invoices', id);
+    if (!hasAny(BILL)) {
+      // viewer: only what the invoice itself carries (no customer / employee / work-order records)
+      inv.payments = (await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+      inv.customer = { id: inv.customer_id, name: inv.customer_name, phone: inv.customer_phone };
+      inv.vehicle = inv.vehicle_id ? { id: inv.vehicle_id, plate: inv.plate, model: inv.model, series: inv.series } : null;
+      inv.work_order = inv.work_order_id ? { id: inv.work_order_id, no: inv.work_order_no } : null;
+      delete inv.parts_cost; (inv.items || []).forEach((i) => delete i.unit_cost);
+      return inv;
+    }
     const e = await emps();
     inv.items = (inv.items || []).map((i) => ({ ...i, technician_name: (e.find((x) => x.id === i.technician_id) || {}).name || null }));
     inv.payments = (await all('transactions', W('ref_type', '==', 'invoice'), W('ref_id', '==', String(id)))).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
@@ -1395,9 +1404,9 @@ function init() {
     await syncAllPrivacy().catch((e) => console.warn('private boxes', e));
     return { user: publicMe(), mustChange: false };
   });
-  route('POST', '/api/auth/logout', ANY, async () => { await F.signOut(auth); me = null; return { ok: true }; });
-  route('GET', '/api/auth/me', ANY, async () => { await syncAllPrivacy().catch((e) => console.warn('private boxes', e)); return { user: publicMe() }; });
-  route('POST', '/api/auth/password', ANY, async ({ body }) => {
+  route('POST', '/api/auth/logout', ROLES, async () => { await F.signOut(auth); me = null; return { ok: true }; });
+  route('GET', '/api/auth/me', ROLES, async () => { await syncAllPrivacy().catch((e) => console.warn('private boxes', e)); return { user: publicMe() }; });
+  route('POST', '/api/auth/password', ROLES, async ({ body }) => {
     if (String(body.password || '').length < 6) throw bad('password_too_short');
     try { await F.reauthenticateWithCredential(auth.currentUser, F.EmailAuthProvider.credential(auth.currentUser.email, body.current || '')); } catch (_) { throw bad('wrong_password'); }
     await F.updatePassword(auth.currentUser, body.password);
@@ -1423,14 +1432,14 @@ function init() {
     return { ok: true };
   });
   const PUBLIC_SETTINGS = Object.keys(DEFAULT_SETTINGS);
-  route('GET', '/api/settings', ANY, async () => { const s = await settings(true); const o = {}; for (const k of PUBLIC_SETTINGS) o[k] = s[k] ?? ''; return o; });
+  route('GET', '/api/settings', ROLES, async () => { const s = await settings(true); const o = {}; for (const k of PUBLIC_SETTINGS) o[k] = s[k] ?? ''; return o; });
   route('PUT', '/api/settings', ['admin'], async ({ body }) => {
     const o = {}; for (const k of PUBLIC_SETTINGS) if (body[k] !== undefined) o[k] = body[k] === null ? '' : String(body[k]);
     await F.setDoc(ref('settings', 'main'), o, { merge: true }); cache.settings = null; await audit('update', 'settings', null); return { ok: true };
   });
   route('GET', '/api/dashboard', ANY, () => dashboard());
   route('GET', '/api/search', ANY, ({ query }) => (String(query.q || '').trim().length < 2 ? {} : globalSearch(String(query.q).trim())));
-  route('GET', '/api/meta', ANY, () => ({ roles: ROLES, wo_statuses: WO_STATUSES }));
+  route('GET', '/api/meta', ROLES, () => ({ roles: ROLES, wo_statuses: WO_STATUSES }));
 
   route('GET', '/api/customers/:id/full', ANY, async ({ params }) => {
     const c = await getResource('customers', params.id);
@@ -1548,7 +1557,7 @@ function init() {
   route('POST', '/api/work-orders/:id/invoice', BILL, ({ params, body }) => invoiceFromWo(params.id, body));
 
   route('POST', '/api/invoices', BILL, ({ body }) => manualInvoice(body));
-  route('GET', '/api/invoices/:id/full', BILL, ({ params }) => invoiceFull(params.id));
+  route('GET', '/api/invoices/:id/full', INV_READ, ({ params }) => invoiceFull(params.id));
   route('POST', '/api/invoices/:id/payments', [...MONEY, 'advisor'], async ({ params, body }) => { await addInvoicePayment(params.id, body); return invoiceFull(params.id); });
   route('POST', '/api/invoices/:id/discount', MGMT, async ({ params, body }) => {
     const inv = await mustRow('invoices', params.id);

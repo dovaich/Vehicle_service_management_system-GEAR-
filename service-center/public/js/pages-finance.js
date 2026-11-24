@@ -33,7 +33,7 @@
     ],
     bind: (el, rows, reload) => el.querySelectorAll('[data-delinv]').forEach((b) => b.onclick = () => G.deleteInvoice(rows[b.closest('tr').dataset.i], reload)),
     foot: (rows) => `<tr><td colspan="5" class="hide-m"></td><td class="num" data-label="${t('total')}"><b>${G.money(rows.filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.total, 0))}</b></td><td class="hide-m"></td><td class="num" data-label="${t('due')}"><b>${G.money(rows.filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.due, 0))}</b></td><td></td></tr>`,
-  }), R.BILL);
+  }), R.INV_READ);
 
   // quick invoice: labor + parts + anything else, no work order needed; the customer and car are optional and
   // are registered automatically from what is typed (nothing typed = the shared cash customer)
@@ -321,7 +321,7 @@
       if (cb) cb.onclick = async () => { if (!(await G.confirm(t('cancel_invoice') + '?'))) return; try { inv = await G.post(`/api/invoices/${inv.id}/cancel`); render(); } catch (e) { G.fail(e); } };
     };
     render();
-  }, R.BILL);
+  }, R.INV_READ);
 
   // ---------------- fixing cash movements: edit (account, method, date, amount, description) / delete ----------------
   const txActions = (cls = '') => (G.can(R.MONEY) ? `<span class="${cls}"><button type="button" class="icon-btn" data-txe title="${t('edit')}">✎</button><button type="button" class="icon-btn danger" data-txd title="${t('delete')}">🗑</button></span>` : '');

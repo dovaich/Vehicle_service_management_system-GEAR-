@@ -60,8 +60,10 @@ function audit(user, action, entity, id, details) {
 // ---------------------------------------------------------------------------
 // Roles & permissions
 // ---------------------------------------------------------------------------
-const ROLES = ['admin', 'manager', 'advisor', 'technician', 'accountant', 'storekeeper'];
-const ANY = ROLES;
+const ROLES = ['admin', 'manager', 'advisor', 'technician', 'accountant', 'storekeeper', 'viewer'];
+// viewer: reads invoices only, so it is not part of "all staff"
+const ANY = ROLES.filter((r) => r !== 'viewer');
+const INV_READ = ['admin', 'manager', 'advisor', 'accountant', 'viewer'];
 const FRONT = ['admin', 'manager', 'advisor'];
 const SHOP = ['admin', 'manager', 'advisor', 'technician'];
 const MONEY = ['admin', 'manager', 'accountant'];
@@ -305,7 +307,7 @@ const RES = {
     special: { unpaid: "i.status IN ('unpaid','partial')" },
     dateCol: 'i.date',
     order: 'i.id DESC',
-    read: ['admin', 'manager', 'advisor', 'accountant'], write: ['admin', 'manager', 'advisor', 'accountant'],
+    read: INV_READ, write: ['admin', 'manager', 'advisor', 'accountant'],
     noCreate: true, noDelete: true,
   },
   accounts: {
@@ -1274,13 +1276,13 @@ route('POST', '/api/auth/login', null, ({ body, req, res }) => {
   audit(u, 'login', 'users', u.id);
   return { user: publicUser(u), mustChange: body.password === 'admin123' };
 });
-route('POST', '/api/auth/logout', ANY, ({ user, res, req }) => {
+route('POST', '/api/auth/logout', ROLES, ({ user, res, req }) => {
   run('DELETE FROM sessions WHERE token=?', user.token);
   res.setHeader('Set-Cookie', `gear_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${isHttps(req) ? '; Secure' : ''}`);
   return { ok: true };
 });
-route('GET', '/api/auth/me', ANY, ({ user }) => ({ user: publicUser(user) }));
-route('POST', '/api/auth/password', ANY, ({ user, body }) => {
+route('GET', '/api/auth/me', ROLES, ({ user }) => ({ user: publicUser(user) }));
+route('POST', '/api/auth/password', ROLES, ({ user, body }) => {
   const u = get('SELECT * FROM users WHERE id=?', user.id);
   if (!D.verifyPassword(body.current || '', u.password_hash)) throw bad('wrong_password');
   if (String(body.password || '').length < 6) throw bad('password_too_short');
@@ -1329,7 +1331,7 @@ route('DELETE', '/api/users/:id', ['admin'], ({ params, user }) => {
 const PUBLIC_SETTINGS = ['center_name_ar', 'center_name_en', 'center_phone', 'center_address', 'tax_no', 'currency', 'vat_rate', 'labor_rate',
   'invoice_footer_ar', 'invoice_footer_en', 'reminder_days_ahead', 'reminder_km_ahead', 'avg_km_per_month', 'allow_negative_stock', 'logo', 'whatsapp_template_ar', 'whatsapp_template_en',
   'work_start', 'work_end', 'work_days_month', 'weekend_days', 'late_grace', 'overtime_rate', 'attendance_payroll', 'deduct_late', 'week_start'];
-route('GET', '/api/settings', ANY, () => {
+route('GET', '/api/settings', ROLES, () => {
   const s = D.allSettings();
   const o = {};
   for (const k of PUBLIC_SETTINGS) o[k] = s[k] ?? '';
@@ -1347,7 +1349,7 @@ route('PUT', '/api/settings', ['admin'], ({ body, user }) => {
 
 route('GET', '/api/dashboard', ANY, ({ user }) => dashboard(user));
 route('GET', '/api/search', ANY, ({ query }) => (String(query.q || '').trim().length < 2 ? {} : globalSearch(String(query.q).trim())));
-route('GET', '/api/meta', ANY, () => ({ roles: ROLES, wo_statuses: WO_STATUSES }));
+route('GET', '/api/meta', ROLES, () => ({ roles: ROLES, wo_statuses: WO_STATUSES }));
 
 // customer / vehicle full profiles
 route('GET', '/api/customers/:id/full', ANY, ({ params, user }) => {
@@ -1484,7 +1486,7 @@ route('POST', '/api/work-orders/:id/invoice', ['admin', 'manager', 'advisor', 'a
 
 // invoices
 route('POST', '/api/invoices', ['admin', 'manager', 'advisor', 'accountant'], ({ body, user }) => createManualInvoice(body, user));
-route('GET', '/api/invoices/:id/full', ['admin', 'manager', 'advisor', 'accountant'], ({ params, user }) => invoiceFull(params.id, user));
+route('GET', '/api/invoices/:id/full', INV_READ, ({ params, user }) => invoiceFull(params.id, user));
 route('POST', '/api/invoices/:id/payments', MONEY.concat(['advisor']), ({ params, body, user }) => { tx(() => addInvoicePayment(Number(params.id), body, user)); return invoiceFull(params.id, user); });
 route('POST', '/api/invoices/:id/discount', MGMT, ({ params, body, user }) => {
   const inv = get('SELECT * FROM invoices WHERE id=?', params.id);

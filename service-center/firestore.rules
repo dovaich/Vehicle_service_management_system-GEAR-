@@ -6,6 +6,8 @@ service cloud.firestore {
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
     function active() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().active == 1; }
     function hasRole(roles) { return active() && (profile().role in roles || profile().get('extra_roles', []).hasAny(roles)); }
+    // a viewer-only account reads invoices and nothing else
+    function staff() { return active() && !(profile().role == 'viewer' && profile().get('extra_roles', []).size() == 0); }
     function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
     function MGMT() { return ['admin', 'manager']; }
     function FRONT() { return ['admin', 'manager', 'advisor']; }
@@ -27,31 +29,31 @@ service cloud.firestore {
       allow update, delete: if hasRole(['admin']);
     }
     match /settings/{id} { allow read: if true; allow write: if hasRole(['admin']); }
-    match /counters/{id} { allow read, write: if active(); }
+    match /counters/{id} { allow read, write: if staff(); }
     match /audit_log/{id} { allow read: if hasRole(['admin']); allow create: if active(); }
 
     // operational data: every active staff member works on it, deletes need a manager
-    match /customers/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
-    match /vehicles/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
-    match /appointments/{id} { allow read: if active(); allow create, update, delete: if hasRole(FRONT()); }
-    match /receptions/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
-    match /diagnoses/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
-    match /work_orders/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
-    match /reminders/{id} { allow read, create, update: if active(); allow delete: if hasRole(FRONT()); }
-    match /attachments/{id} { allow read, create, delete: if active(); }
-    match /parts/{id} { allow read, update: if active(); allow create: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
+    match /customers/{id} { allow read, create, update: if staff(); allow delete: if hasRole(MGMT()); }
+    match /vehicles/{id} { allow read, create, update: if staff(); allow delete: if hasRole(MGMT()); }
+    match /appointments/{id} { allow read: if staff(); allow create, update, delete: if hasRole(FRONT()); }
+    match /receptions/{id} { allow read, create, update: if staff(); allow delete: if hasRole(MGMT()); }
+    match /diagnoses/{id} { allow read, create, update: if staff(); allow delete: if hasRole(MGMT()); }
+    match /work_orders/{id} { allow read, create, update: if staff(); allow delete: if hasRole(MGMT()); }
+    match /reminders/{id} { allow read, create, update: if staff(); allow delete: if hasRole(FRONT()); }
+    match /attachments/{id} { allow read, create, delete: if staff(); }
+    match /parts/{id} { allow read, update: if staff(); allow create: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
     match /stock_moves/{id} {
-      allow read: if hasRole(SUPP()); allow create: if active();
+      allow read: if hasRole(SUPP()); allow create: if staff();
       // the manager links an old counter sale to its invoice, or marks it as returned to stock
       allow update: if hasRole(MGMT()) && onlyChanges(['ref_id', 'notes', 'fixed']);
     }
-    match /employees/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
-    match /service_types/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
+    match /employees/{id} { allow read: if staff(); allow write: if hasRole(MGMT()); }
+    match /service_types/{id} { allow read: if staff(); allow write: if hasRole(MGMT()); }
 
     // purchasing & money
     match /suppliers/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
     match /purchases/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
-    match /invoices/{id} { allow read, create, update: if hasRole(BILL()); allow delete: if hasRole(MGMT()); }
+    match /invoices/{id} { allow read: if hasRole(BILL()) || hasRole(['viewer']); allow create, update: if hasRole(BILL()); allow delete: if hasRole(MGMT()); }
     // a private box (in_reports == 0) is created / changed by the admin only; its balance lives in private_balances
     function privAcc(d) { return d.get('in_reports', 1) == 0; }
     match /accounts/{id} {
@@ -75,7 +77,7 @@ service cloud.firestore {
       allow create, update: if hasRole(MONEY()) && request.resource.data.keys().hasOnly(['balance']);
     }
     match /transactions/{id} {
-      allow read: if hasRole(MONEY()) || (hasRole(['advisor']) && resource.data.ref_type == 'invoice');
+      allow read: if hasRole(MONEY()) || (hasRole(['advisor', 'viewer']) && resource.data.ref_type == 'invoice');
       allow create: if hasRole(MONEY()) || (hasRole(['advisor']) && request.resource.data.ref_type == 'invoice');
       allow delete: if hasRole(MONEY());
       // fixing a movement (account, method, date, amount, description) or re-pointing it to another customer

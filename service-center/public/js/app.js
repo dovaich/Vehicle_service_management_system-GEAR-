@@ -9,7 +9,7 @@
       ['#/appointments', 'appointments', '📅', R.FRONT], ['#/receptions', 'receptions', '🚘', R.FRONT], ['#/customers', 'customers', '👥', '*'],
       ['#/vehicles', 'vehicles', '🚗', '*'], ['#/reminders', 'reminders', '🔔', R.FRONT]] },
     { group: 'nav_workshop', items: [['#/diagnoses', 'diagnoses', '🩺', R.SHOP], ['#/work-orders', 'work_orders', '🔧', '*']] },
-    { group: 'nav_finance', items: [['#/invoices', 'invoices', '🧾', R.BILL], ['#/cash', 'cash', '💰', R.MONEY], ['#/reports', 'reports', '📈', R.MONEY]] },
+    { group: 'nav_finance', items: [['#/invoices', 'invoices', '🧾', R.INV_READ], ['#/cash', 'cash', '💰', R.MONEY], ['#/reports', 'reports', '📈', R.MONEY]] },
     { group: 'nav_store', items: [['#/parts', 'parts', '📦', '*'], ['#/stock-moves', 'stock_moves', '🔄', R.SUPP], ['#/purchases', 'purchases', '🛒', R.SUPP], ['#/suppliers', 'suppliers', '🏭', R.SUPP]] },
     { group: 'nav_hr', items: [['#/employees', 'employees', '🧑‍🔧', R.MGMT], ['#/attendance', 'attendance', '🕘', '*'], ['#/bonuses', 'bonuses', '🎁', R.MONEY]] },
     { group: 'nav_admin', items: [['#/service-types', 'service_types', '🛠', R.MGMT], ['#/users', 'users', '🔐', R.ADMIN], ['#/settings', 'settings', '⚙', R.ADMIN], ['#/audit', 'audit', '📜', R.ADMIN]] },
@@ -38,7 +38,7 @@
       <div class="main">
         <header class="topbar">
           <button class="icon-btn burger" data-burger aria-label="${t('menu')}">☰</button>
-          <div class="gsearch"><input type="search" placeholder="${t('global_search')}" data-gsearch><div class="gsearch-res" hidden></div></div>
+          ${G.viewerOnly() ? '<div class="gsearch"></div>' : `<div class="gsearch"><input type="search" placeholder="${t('global_search')}" data-gsearch><div class="gsearch-res" hidden></div></div>`}
           <button class="icon-btn" data-theme title="${t('theme')}">🌓</button>
           <button class="btn btn-sm" data-lang>${t('language')}</button>
           <button class="btn btn-sm btn-primary" data-install hidden title="${t('install_app')}">⬇ <span class="hide-sm">${t('install_app')}</span></button>
@@ -47,10 +47,10 @@
         <main id="view" class="view"></main>
       </div>
       <nav class="bottom-nav">
-        <a href="#/"><span>📊</span><small>${t('nav_dashboard')}</small></a>
+        ${G.viewerOnly() ? `<a href="#/invoices"><span>🧾</span><small>${t('invoices')}</small></a>` : `<a href="#/"><span>📊</span><small>${t('nav_dashboard')}</small></a>`}
         ${G.can(R.FRONT) ? `<a href="#/receptions/new"><span>🚘</span><small>${t('reception')}</small></a>` : ''}
-        <a href="#/work-orders"><span>🔧</span><small>${t('work_orders')}</small></a>
-        ${G.can(R.FRONT) ? `<a href="#/reminders"><span>🔔</span><small>${t('reminders')}</small></a>` : `<a href="#/parts"><span>📦</span><small>${t('parts')}</small></a>`}
+        ${G.viewerOnly() ? '' : `<a href="#/work-orders"><span>🔧</span><small>${t('work_orders')}</small></a>`}
+        ${G.viewerOnly() ? '' : G.can(R.FRONT) ? `<a href="#/reminders"><span>🔔</span><small>${t('reminders')}</small></a>` : `<a href="#/parts"><span>📦</span><small>${t('parts')}</small></a>`}
         <a href="javascript:void 0" data-burger><span>☰</span><small>${t('menu')}</small></a>
       </nav>`;
     app.querySelectorAll('[data-burger]').forEach((b) => b.onclick = () => document.body.classList.toggle('nav-open'));
@@ -67,6 +67,7 @@
 
   function bindGlobalSearch(box) {
     const input = box.querySelector('input');
+    if (!input) return; // no global search for the invoice viewer
     const res = box.querySelector('.gsearch-res');
     let timer;
     input.addEventListener('input', () => {
