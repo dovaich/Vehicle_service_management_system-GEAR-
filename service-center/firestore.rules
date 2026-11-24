@@ -1,0 +1,93 @@
+rules_version = '2';
+// GEAR Service Center - role based access (mirrors server/server.js permissions)
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function active() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && profile().active == 1; }
+    function hasRole(roles) { return active() && (profile().role in roles || profile().get('extra_roles', []).hasAny(roles)); }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function MGMT() { return ['admin', 'manager']; }
+    function FRONT() { return ['admin', 'manager', 'advisor']; }
+    function MONEY() { return ['admin', 'manager', 'accountant']; }
+    function SUPP() { return ['admin', 'manager', 'accountant', 'storekeeper']; }
+    function BILL() { return ['admin', 'manager', 'advisor', 'accountant']; }
+
+    // first-run setup: the very first account becomes admin
+    match /meta/setup {
+      allow read: if true;
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/meta/setup)
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    match /users/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || hasRole(['admin']);
+      allow create: if hasRole(['admin'])
+        || (signedIn() && request.auth.uid == uid && !exists(/databases/$(database)/documents/meta/setup)
+            && existsAfter(/databases/$(database)/documents/meta/setup) && request.resource.data.role == 'admin');
+      allow update, delete: if hasRole(['admin']);
+    }
+    match /settings/{id} { allow read: if true; allow write: if hasRole(['admin']); }
+    match /counters/{id} { allow read, write: if active(); }
+    match /audit_log/{id} { allow read: if hasRole(['admin']); allow create: if active(); }
+
+    // operational data: every active staff member works on it, deletes need a manager
+    match /customers/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /vehicles/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /appointments/{id} { allow read: if active(); allow create, update, delete: if hasRole(FRONT()); }
+    match /receptions/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /diagnoses/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /work_orders/{id} { allow read, create, update: if active(); allow delete: if hasRole(MGMT()); }
+    match /reminders/{id} { allow read, create, update: if active(); allow delete: if hasRole(FRONT()); }
+    match /attachments/{id} { allow read, create, delete: if active(); }
+    match /parts/{id} { allow read, update: if active(); allow create: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
+    match /stock_moves/{id} {
+      allow read: if hasRole(SUPP()); allow create: if active();
+      // the manager links an old counter sale to its invoice, or marks it as returned to stock
+      allow update: if hasRole(MGMT()) && onlyChanges(['ref_id', 'notes', 'fixed']);
+    }
+    match /employees/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
+    match /service_types/{id} { allow read: if active(); allow write: if hasRole(MGMT()); }
+
+    // purchasing & money
+    match /suppliers/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
+    match /purchases/{id} { allow read, create, update: if hasRole(SUPP()); allow delete: if hasRole(MGMT()); }
+    match /invoices/{id} { allow read, create, update: if hasRole(BILL()); allow delete: if hasRole(MGMT()); }
+    // a private box (in_reports == 0) is created / changed by the admin only; its balance lives in private_balances
+    function privAcc(d) { return d.get('in_reports', 1) == 0; }
+    match /accounts/{id} {
+      allow read: if hasRole(BILL());
+      allow create: if hasRole(['admin']) || (hasRole(MGMT()) && !privAcc(request.resource.data));
+      allow delete: if hasRole(['admin']) || (hasRole(MGMT()) && !privAcc(resource.data));
+      allow update: if hasRole(['admin'])
+        || (hasRole(MGMT()) && !privAcc(resource.data) && !privAcc(request.resource.data) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['priv_ok']))
+        || (hasRole(BILL()) && !privAcc(resource.data) && onlyChanges(['balance']));
+    }
+    // movements and balance of private boxes: only the admin reads them; staff can only put a transfer in (and fix / undo it)
+    match /private_tx/{id} {
+      allow read: if hasRole(['admin']);
+      allow create: if hasRole(['admin']) || (hasRole(MONEY()) && request.resource.data.category == 'transfer' && request.resource.data.direction == 'in');
+      allow update: if hasRole(['admin']) || (hasRole(MONEY()) && resource.data.category == 'transfer' && request.resource.data.category == 'transfer'
+        && request.resource.data.direction == resource.data.direction && request.resource.data.account_id == resource.data.account_id);
+      allow delete: if hasRole(['admin']) || (hasRole(MONEY()) && resource.data.category == 'transfer');
+    }
+    match /private_balances/{id} {
+      allow read, delete: if hasRole(['admin']);
+      allow create, update: if hasRole(MONEY()) && request.resource.data.keys().hasOnly(['balance']);
+    }
+    match /transactions/{id} {
+      allow read: if hasRole(MONEY()) || (hasRole(['advisor']) && resource.data.ref_type == 'invoice');
+      allow create: if hasRole(MONEY()) || (hasRole(['advisor']) && request.resource.data.ref_type == 'invoice');
+      allow delete: if hasRole(MONEY());
+      // fixing a movement (account, method, date, amount, description) or re-pointing it to another customer
+      allow update: if hasRole(MONEY());
+    }
+    match /bonuses/{id} { allow read, write: if hasRole(MONEY()); }
+
+    // attendance: recorded by the manager / accountant only; staff can read their own records
+    match /attendance/{id} {
+      allow read: if hasRole(['admin', 'manager', 'accountant'])
+        || (active() && profile().get('employee_id', null) != null && resource.data.employee_id == profile().employee_id);
+      allow write: if hasRole(['admin', 'manager', 'accountant']);
+    }
+  }
+}

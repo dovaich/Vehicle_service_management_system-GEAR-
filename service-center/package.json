@@ -1,0 +1,13 @@
+{
+  "name": "gear-service-center",
+  "version": "1.0.0",
+  "description": "BMW service center management system (Arabic / English) - reception, diagnosis, work orders, inventory, suppliers, cash, invoices, bonuses, reminders",
+  "main": "server/server.js",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server/server.js",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.js"
+  },
+  "license": "MIT"
+}
